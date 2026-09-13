@@ -17,11 +17,11 @@ function generateMarkdownReport(): string {
   const run = props.run;
   const rows = run.models
     .map((m) => {
-      const wer = ((run.macroAverageWer[m] ?? 0) * 100).toFixed(2);
-      const cer = ((run.macroAverageCer[m] ?? 0) * 100).toFixed(2);
-      const lat = run.averageLatencyMs[m] ?? 0;
+      const wer = run.macroAverageWer[m] != null ? `${(run.macroAverageWer[m]! * 100).toFixed(2)}%` : 'Not configured';
+      const cer = run.macroAverageCer[m] != null ? `${(run.macroAverageCer[m]! * 100).toFixed(2)}%` : 'Not configured';
+      const lat = run.averageLatencyMs[m] != null ? `${run.averageLatencyMs[m]} ms` : '—';
       const succ = run.successRate[m] ?? 0;
-      return `| **${m.toUpperCase()}** | ${wer}% | ${cer}% | ${lat} ms | ${succ}% |`;
+      return `| **${m.toUpperCase()}** | ${wer} | ${cer} | ${lat} | ${succ}% |`;
     })
     .join('\n');
 

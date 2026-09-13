@@ -200,16 +200,20 @@ export interface BenchmarkModelConfig {
   isLiveConfigured: boolean;
 }
 
+// wer/cer/hypothesisTranscript/errorAnalysis are only present when
+// success is true — an unconfigured model, or one whose real API call
+// failed, reports success:false with an `error` and no fabricated metrics.
 export interface ModelInferenceResult {
   modelId: string;
-  hypothesisTranscript: string;
-  normalizedHypothesis: string;
-  latencyMs: number;
+  hypothesisTranscript?: string;
+  normalizedHypothesis?: string;
+  latencyMs?: number;
   success: boolean;
+  notConfigured?: boolean;
   error?: string;
-  wer: number;
-  cer: number;
-  errorAnalysis: ErrorAnalysis;
+  wer?: number;
+  cer?: number;
+  errorAnalysis?: ErrorAnalysis;
   codeSwitchAnalysis?: CodeSwitchAnalysis;
 }
 
@@ -249,15 +253,25 @@ export interface BenchmarkRun {
   runId: string;
   timestamp: string;
   models: string[];
+  // Subset of `models` that was actually configured and evaluated for real
+  // in this run; the rest are honestly reported as not-configured.
+  configuredModels?: string[];
   sampleCount: number;
   languages: LanguageCode[];
   results: {
     sampleId: string;
+    sampleTitle?: string;
+    language?: LanguageCode;
+    referenceTranscript?: string;
+    hasCodeSwitching?: boolean;
+    referenceAudioAvailable?: boolean;
     modelResults: Record<string, ModelInferenceResult>;
   }[];
-  macroAverageWer: Record<string, number>;
-  macroAverageCer: Record<string, number>;
-  averageLatencyMs: Record<string, number>;
+  // null for a model with zero successful results in this run (unconfigured
+  // or every attempt failed) — distinct from a real 0, never fabricated.
+  macroAverageWer: Record<string, number | null>;
+  macroAverageCer: Record<string, number | null>;
+  averageLatencyMs: Record<string, number | null>;
   successRate: Record<string, number>;
   status: 'running' | 'completed' | 'partial' | 'failed';
   summaryNote?: string;

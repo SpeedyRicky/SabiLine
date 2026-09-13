@@ -1,7 +1,11 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
-import { GoogleGenAI, Modality } from '@google/genai';
+import { Modality } from '@google/genai';
+import { getGeminiClient } from './src/services/tts/geminiClient';
+import { pcmToWavBuffer } from './src/services/tts/pcmToWav';
+import { synthesizeReferenceAudio } from './src/services/tts/geminiSynthesize';
+import { ASR_PROVIDER_REGISTRY, DEFAULT_BENCHMARK_MODELS } from './src/services/asr/registry';
 import { calculateWER } from './src/services/benchmark/wer';
 import { calculateCER } from './src/services/benchmark/cer';
 import { performErrorAnalysis, analyzeCodeSwitching } from './src/services/benchmark/errorAnalysis';
@@ -17,52 +21,6 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '50mb' }));
 
-// Lazy initialization of Gemini client
-let geminiClient: GoogleGenAI | null = null;
-function getGeminiClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
-  if (!geminiClient) {
-    geminiClient = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-  }
-  return geminiClient;
-}
-
-/**
- * Utility: Converts raw PCM 16-bit mono audio (e.g. from Gemini TTS) into a standard WAV Buffer
- */
-function pcmToWavBuffer(pcmBuffer: Buffer, sampleRate = 24000, numChannels = 1, bitDepth = 16): Buffer {
-  const byteRate = (sampleRate * numChannels * bitDepth) / 8;
-  const blockAlign = (numChannels * bitDepth) / 8;
-  const dataSize = pcmBuffer.length;
-  const header = Buffer.alloc(44);
-
-  header.write('RIFF', 0);
-  header.writeUInt32LE(36 + dataSize, 4);
-  header.write('WAVE', 8);
-
-  header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20); // PCM
-  header.writeUInt16LE(numChannels, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(byteRate, 28);
-  header.writeUInt16LE(blockAlign, 32);
-  header.writeUInt16LE(bitDepth, 34);
-
-  header.write('data', 36);
-  header.writeUInt32LE(dataSize, 40);
-
-  return Buffer.concat([header, pcmBuffer]);
-}
-
 // 1. Health check
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({
@@ -76,8 +34,6 @@ app.get('/api/health', (req: Request, res: Response) => {
 app.get('/api/providers/status', (req: Request, res: Response) => {
   const hasGemini = Boolean(process.env.GEMINI_API_KEY);
   const hasSahara = Boolean(process.env.SAHARA_API_KEY);
-  const hasModelB = Boolean(process.env.MODEL_B_API_KEY);
-  const hasModelC = Boolean(process.env.MODEL_C_API_KEY);
 
   res.json({
     providers: {
@@ -101,19 +57,19 @@ app.get('/api/providers/status', (req: Request, res: Response) => {
       },
       model_b: {
         id: 'model_b',
-        name: 'Model B (OmniLLM / Secondary ASR)',
-        isConfigured: hasModelB,
-        statusMessage: hasModelB
+        name: 'Model B (custom ASR endpoint)',
+        isConfigured: ASR_PROVIDER_REGISTRY.model_b.isConfigured(),
+        statusMessage: ASR_PROVIDER_REGISTRY.model_b.isConfigured()
           ? 'Connected'
-          : 'Awaiting MODEL_B_API_KEY (Simulated comparison available)',
+          : 'Awaiting MODEL_B_API_KEY and MODEL_B_API_URL (bring your own real ASR endpoint)',
       },
       model_c: {
         id: 'model_c',
-        name: 'Model C (Azure / Whisper ASR)',
-        isConfigured: hasModelC,
-        statusMessage: hasModelC
+        name: 'Model C (custom ASR endpoint)',
+        isConfigured: ASR_PROVIDER_REGISTRY.model_c.isConfigured(),
+        statusMessage: ASR_PROVIDER_REGISTRY.model_c.isConfigured()
           ? 'Connected'
-          : 'Awaiting MODEL_C_API_KEY (Simulated comparison available)',
+          : 'Awaiting MODEL_C_API_KEY and MODEL_C_API_URL (bring your own real ASR endpoint)',
       },
       browser: {
         id: 'browser',
@@ -416,10 +372,20 @@ Return a JSON object with scores from 1 to 5 (or specified enum):
 });
 
 // 7. Live Speech Model Benchmark Runner
+//
+// Real pipeline: for each sample, synthesize one real audio clip from the
+// ground-truth transcript (so every model is fed identical input), then send
+// that same audio to every configured ASR provider and score its actual
+// returned transcript with the real WER/CER engine. A model that isn't
+// configured (no API key, or for Model B/C no custom endpoint URL) is
+// reported as not-configured and excluded from the averages below — never
+// zero-filled or fabricated. See src/services/asr/ for the provider
+// implementations and src/services/tts/geminiSynthesize.ts for the audio
+// synthesis step.
 app.post('/api/benchmark/run', async (req: Request, res: Response) => {
   const {
     sampleIds = [],
-    selectedModels = ['sahara', 'model_b', 'model_c'] as string[],
+    selectedModels = DEFAULT_BENCHMARK_MODELS as string[],
     normalizationOptions = {
       stripPunctuation: true,
       toLowerCase: true,
@@ -441,16 +407,33 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
   const runId = `RUN-${Date.now().toString(36).toUpperCase()}`;
   const timestamp = new Date().toISOString();
 
-  // Model realistic hypotheses generation based on empirical AfriHealth benchmarks
-  // If Sahara API key is provided, we can call it. Otherwise, we simulate real ASR outputs
-  // with calibrated African phonological errors and code-switching boundary slips!
-  const results = [];
+  const configuredModels = (selectedModels as string[]).filter(
+    (m) => ASR_PROVIDER_REGISTRY[m]?.isConfigured()
+  );
+
+  if (!configuredModels.length) {
+    return res.status(400).json({
+      success: false,
+      error:
+        'None of the selected speech models are configured for real evaluation. Set GEMINI_API_KEY (also required to synthesize reference audio), SAHARA_API_KEY, or MODEL_B_API_KEY+MODEL_B_API_URL / MODEL_C_API_KEY+MODEL_C_API_URL.',
+    });
+  }
+
+  const results: Array<{
+    sampleId: string;
+    sampleTitle: string;
+    language: LanguageCode;
+    referenceTranscript: string;
+    hasCodeSwitching: boolean;
+    referenceAudioAvailable: boolean;
+    modelResults: Record<string, any>;
+  }> = [];
   const modelTotalWer: Record<string, number[]> = {};
   const modelTotalCer: Record<string, number[]> = {};
   const modelLatency: Record<string, number[]> = {};
   const modelSuccess: Record<string, { success: number; total: number }> = {};
 
-  selectedModels.forEach((m: string) => {
+  (selectedModels as string[]).forEach((m) => {
     modelTotalWer[m] = [];
     modelTotalCer[m] = [];
     modelLatency[m] = [];
@@ -462,54 +445,46 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
     const ref = sample.referenceTranscript;
     const isCodeSwitched = sample.hasCodeSwitching;
 
-    for (const modelId of selectedModels) {
-      const execStart = Date.now();
-      let hypothesis = '';
-      let latencyMs = 0;
-      let isSuccess = true;
+    // One real TTS call per sample, reused identically for every model
+    // being compared, so the comparison is fair.
+    const synth = await synthesizeReferenceAudio(ref, sample.language);
 
-      // Realistically synthesize model behaviors based on AfriHealth MultiBench findings:
-      // Sahara: Exceptional on Hausa, Yoruba, Igbo, and Nigerian English accents.
-      // Model B (OmniLLM): Strong general multilingual, occasional code-switch boundary slips.
-      // Model C (Azure / Whisper): High accuracy on standard English, higher error rates on tonal African words.
-      if (modelId === 'sahara') {
-        latencyMs = Math.floor(380 + Math.random() * 120);
-        // Sahara has native African phonetics: minor insertions/substitutions
-        if (sample.language === 'ha') {
-          hypothesis = ref.replace('don karfafa', 'don karfafa').replace('nan da nan', 'nandanan');
-        } else if (sample.language === 'yo') {
-          hypothesis = ref.replace('nínú oúnjẹ', 'ninu ounje').replace('láìsí', 'laisi');
-        } else if (sample.language === 'ig') {
-          hypothesis = ref.replace('ọbara gị', 'obara gi').replace('kpọtara', 'kpotara');
-        } else if (isCodeSwitched) {
-          hypothesis = ref; // Sahara handles intra-utterance switches well
-        } else {
-          hypothesis = ref;
-        }
-      } else if (modelId === 'model_b') {
-        latencyMs = Math.floor(520 + Math.random() * 160);
-        if (isCodeSwitched) {
-          // Drops or mistranscribes the African switch segment
-          hypothesis = ref.replace('ara n gbọ̀n', 'around born').replace('ahụ ọkụ', 'ahu oku is');
-        } else if (sample.language === 'yo' || sample.language === 'ig') {
-          hypothesis = ref.replace(/[\u0300-\u036f]/g, '').replace('dáadáa', 'dada');
-        } else {
-          hypothesis = ref.replace('capsule', 'capsules');
-        }
-      } else if (modelId === 'model_c') {
-        latencyMs = Math.floor(650 + Math.random() * 220);
-        if (isCodeSwitched) {
-          hypothesis = ref.replace('yau da safe', 'yellow the safe').replace('zazzabi', 'that the bee');
-        } else if (sample.language === 'ha') {
-          hypothesis = ref.replace('zazzabi mai tsanani', 'the severe fever').replace('maganin iron', 'iron medicine');
-        } else if (sample.language === 'ig') {
-          hypothesis = ref.replace('amụrụ ọhụrụ', 'amuru ohuru').replace('ọbara', 'blood');
-        } else {
-          hypothesis = ref.replace('antibiotic', 'anti biotic');
-        }
+    for (const modelId of selectedModels as string[]) {
+      modelSuccess[modelId].total += 1;
+      const provider = ASR_PROVIDER_REGISTRY[modelId];
+
+      if (!provider || !provider.isConfigured()) {
+        sampleResults[modelId] = {
+          modelId,
+          success: false,
+          notConfigured: true,
+          error: `${provider?.displayName ?? modelId} is not configured for this deployment.`,
+        };
+        continue;
       }
 
-      // Calculate real WER, CER, and Error Analysis
+      if (!synth.success || !synth.audioBase64 || !synth.mimeType) {
+        sampleResults[modelId] = {
+          modelId,
+          success: false,
+          error: `Could not synthesize reference audio to evaluate against: ${synth.error}`,
+        };
+        continue;
+      }
+
+      const transcription = await provider.transcribe(synth.audioBase64, synth.mimeType, sample.language);
+
+      if (!transcription.success || !transcription.transcript) {
+        sampleResults[modelId] = {
+          modelId,
+          success: false,
+          latencyMs: transcription.latencyMs,
+          error: transcription.error || 'Transcription failed.',
+        };
+        continue;
+      }
+
+      const hypothesis = transcription.transcript;
       const werCalc = calculateWER(ref, hypothesis, normalizationOptions);
       const cerCalc = calculateCER(ref, hypothesis, normalizationOptions);
       const csAnalysis = isCodeSwitched ? analyzeCodeSwitching(ref, sample.language) : undefined;
@@ -517,16 +492,15 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
 
       modelTotalWer[modelId].push(werCalc.wer);
       modelTotalCer[modelId].push(cerCalc.cer);
-      modelLatency[modelId].push(latencyMs);
-      modelSuccess[modelId].total += 1;
-      if (isSuccess) modelSuccess[modelId].success += 1;
+      modelLatency[modelId].push(transcription.latencyMs);
+      modelSuccess[modelId].success += 1;
 
       sampleResults[modelId] = {
         modelId,
         hypothesisTranscript: hypothesis,
         normalizedHypothesis: werCalc.normalizedHypothesis,
-        latencyMs,
-        success: isSuccess,
+        latencyMs: transcription.latencyMs,
+        success: true,
         wer: werCalc.wer,
         cer: cerCalc.cer,
         errorAnalysis,
@@ -540,29 +514,33 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
       language: sample.language,
       referenceTranscript: ref,
       hasCodeSwitching: isCodeSwitched,
+      referenceAudioAvailable: synth.success,
       modelResults: sampleResults,
     });
   }
 
-  // Calculate macro averages
-  const macroAverageWer: Record<string, number> = {};
-  const macroAverageCer: Record<string, number> = {};
-  const averageLatencyMs: Record<string, number> = {};
+  // Macro averages are computed only over models that produced at least one
+  // real successful transcription; unconfigured/failed models report null
+  // rather than a fabricated or misleading 0.
+  const macroAverageWer: Record<string, number | null> = {};
+  const macroAverageCer: Record<string, number | null> = {};
+  const averageLatencyMs: Record<string, number | null> = {};
   const successRate: Record<string, number> = {};
 
-  selectedModels.forEach((m: string) => {
+  (selectedModels as string[]).forEach((m) => {
     const wers = modelTotalWer[m];
     const cers = modelTotalCer[m];
     const lats = modelLatency[m];
     const succ = modelSuccess[m];
 
-    macroAverageWer[m] = Number((wers.reduce((a, b) => a + b, 0) / (wers.length || 1)).toFixed(4));
-    macroAverageCer[m] = Number((cers.reduce((a, b) => a + b, 0) / (cers.length || 1)).toFixed(4));
-    averageLatencyMs[m] = Math.round(lats.reduce((a, b) => a + b, 0) / (lats.length || 1));
+    macroAverageWer[m] = wers.length ? Number((wers.reduce((a, b) => a + b, 0) / wers.length).toFixed(4)) : null;
+    macroAverageCer[m] = cers.length ? Number((cers.reduce((a, b) => a + b, 0) / cers.length).toFixed(4)) : null;
+    averageLatencyMs[m] = lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : null;
     successRate[m] = Number(((succ.success / (succ.total || 1)) * 100).toFixed(1));
   });
 
   const languages = Array.from(new Set(targetSamples.map(s => s.language))) as LanguageCode[];
+  const isPartial = configuredModels.length < (selectedModels as string[]).length;
 
   return res.json({
     success: true,
@@ -570,6 +548,7 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
       runId,
       timestamp,
       models: selectedModels,
+      configuredModels,
       sampleCount: targetSamples.length,
       languages,
       results,
@@ -577,8 +556,10 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
       macroAverageCer,
       averageLatencyMs,
       successRate,
-      status: 'completed',
-      summaryNote: `Evaluated ${targetSamples.length} de-identified clinical instances across ${selectedModels.length} speech models.`,
+      status: isPartial ? 'partial' : 'completed',
+      summaryNote: isPartial
+        ? `Partial benchmark — ${configuredModels.length} of ${(selectedModels as string[]).length} models configured and evaluated (${configuredModels.map((m) => ASR_PROVIDER_REGISTRY[m]?.displayName ?? m).join(', ')}). Each configured model transcribed the same synthesized reference audio and was scored against ground truth; unconfigured models are excluded from these numbers, not zero-filled.`
+        : `Evaluated ${targetSamples.length} de-identified clinical instances across ${(selectedModels as string[]).length} speech models, using synthesized reference audio transcribed live by each model.`,
     },
   });
 });
