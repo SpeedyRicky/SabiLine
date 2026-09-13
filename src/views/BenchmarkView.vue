@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import {
   Activity,
   Play,
   RotateCcw,
   CheckCircle2,
+  AlertCircle,
   FileText,
   BarChart2,
   Sliders,
@@ -13,10 +14,11 @@ import {
   Globe2,
   Info,
 } from 'lucide-vue-next';
-import type { BenchmarkRun, LanguageCode } from '../types';
+import type { BenchmarkRun, LanguageCode, ModelInferenceResult } from '../types';
 import type { NormalizationOptions } from '../services/benchmark/normalization';
 import { CLINICAL_AUDIO_SAMPLES } from '../services/benchmark/sampleDataset';
 import { AFRIHEALTH_REFERENCE_RESULTS } from '../services/benchmark/referenceData';
+import { ASR_MODEL_CATALOG, catalogLabel } from '../services/asr/catalog';
 import ExportReportModal from '../components/ExportReportModal.vue';
 import CodeSwitchTimeline from '../components/CodeSwitchTimeline.vue';
 
@@ -85,7 +87,10 @@ async function handleRunBenchmark() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         sampleIds: filteredSamples.value.map((s) => s.id),
-        selectedModels: ['sahara', 'model_b', 'model_c'],
+        // Model selection is intentionally omitted here — the server
+        // decides the full candidate list and honestly reports which of
+        // them are actually configured, rather than the client asserting a
+        // fixed three-model list up front.
         normalizationOptions: normOptions.value,
       }),
     });
@@ -99,6 +104,7 @@ async function handleRunBenchmark() {
     if (data.run.results.length > 0) {
       inspectedSampleId.value = data.run.results[0].sampleId;
     }
+    inspectedModelId.value = data.run.configuredModels?.[0] ?? data.run.models?.[0] ?? null;
   } catch (err) {
     runError.value = err instanceof Error ? err.message : 'Failed to complete benchmark run';
   } finally {
@@ -138,15 +144,41 @@ const qaOverallScore = computed(() => {
   return sum / NUMERIC_QA_DIMENSIONS.length;
 });
 
+const inspectedModelId = ref<string | null>(null);
+
 const activeInspectedResult = computed(() => benchmarkRun.value?.results.find((r) => r.sampleId === inspectedSampleId.value));
 const activeInspectedSample = computed(() => CLINICAL_AUDIO_SAMPLES.find((s) => s.id === inspectedSampleId.value));
-const saharaDeepDive = computed(() => activeInspectedResult.value?.modelResults.sahara);
+const deepDiveResult = computed<ModelInferenceResult | undefined>(() =>
+  inspectedModelId.value ? activeInspectedResult.value?.modelResults[inspectedModelId.value] : undefined
+);
 
 function riskBadgeClass(risk: 'low' | 'moderate' | 'high' | 'safe' | 'low_risk' | 'harmful') {
   if (risk === 'low' || risk === 'safe') return 'bg-emerald-50 text-emerald-800 border-emerald-200';
   if (risk === 'moderate' || risk === 'low_risk') return 'bg-amber-50 text-amber-800 border-amber-200';
   return 'bg-rose-50 text-rose-800 border-rose-200';
 }
+
+function fmtPct(n: number | null | undefined): string {
+  return n == null ? 'Not configured' : `${(n * 100).toFixed(1)}%`;
+}
+
+function fmtMs(n: number | null | undefined): string {
+  return n == null ? '—' : `${n} ms`;
+}
+
+// Ranks only models that produced at least one successful transcription
+// this run (lower macro WER is better); unconfigured/failed models are
+// never given a fabricated rank.
+const modelRank = computed(() => {
+  const rankMap = new Map<string, number>();
+  if (!benchmarkRun.value) return rankMap;
+  const ranked = benchmarkRun.value.models
+    .map((m) => ({ id: m, wer: benchmarkRun.value!.macroAverageWer[m] }))
+    .filter((x): x is { id: string; wer: number } => x.wer != null)
+    .sort((a, b) => a.wer - b.wer);
+  ranked.forEach((x, idx) => rankMap.set(x.id, idx + 1));
+  return rankMap;
+});
 </script>
 
 <template>
@@ -259,8 +291,8 @@ function riskBadgeClass(risk: 'low' | 'moderate' | 'high' | 'safe' | 'low_risk' 
 
         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
           <div class="text-xs text-slate-500">
-            Models evaluated: <strong class="text-slate-800">Sahara</strong> vs <strong class="text-slate-800">Model B</strong> vs
-            <strong class="text-slate-800">Model C</strong>
+            Candidate models: <strong v-for="(m, idx) in ASR_MODEL_CATALOG" :key="m.id" class="text-slate-800">{{ m.displayName }}<span v-if="idx < ASR_MODEL_CATALOG.length - 1">, </span></strong>
+            — only models with real credentials configured are actually evaluated.
           </div>
 
           <button
@@ -289,49 +321,64 @@ function riskBadgeClass(risk: 'low' | 'moderate' | 'high' | 'safe' | 'low_risk' 
         </div>
         <h4 class="text-sm font-semibold text-slate-900">Awaiting Benchmark Execution</h4>
         <p class="text-xs text-slate-500 max-w-md mx-auto">
-          Click "Run Live Benchmark" to evaluate speech recognition across {{ filteredSamples.length }} consented clinical utterances.
+          Click "Run Live Benchmark" to synthesize real reference audio for {{ filteredSamples.length }} consented clinical
+          utterances and have each configured model transcribe it live — this makes real API calls, so a full run can take
+          a minute or more.
         </p>
       </div>
 
       <div v-else-if="benchmarkRun" class="space-y-4">
+        <div v-if="benchmarkRun.status === 'partial'" class="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 flex items-start gap-2">
+          <AlertCircle class="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
+          <span>{{ benchmarkRun.summaryNote }}</span>
+        </div>
+
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div class="bg-white border border-slate-200 rounded-lg p-4 shadow-xs text-slate-800">
             <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">Macro-Average WER (Lower is Better)</span>
-            <div class="text-xl font-bold text-emerald-700">
-              {{ (benchmarkRun.macroAverageWer.sahara * 100).toFixed(1) }}%
-              <span class="text-xs font-normal text-slate-500 ml-1.5">(Sahara)</span>
-            </div>
-            <div class="text-xs text-slate-500 mt-2 space-y-0.5">
-              <div>Model B: {{ (benchmarkRun.macroAverageWer.model_b * 100).toFixed(1) }}%</div>
-              <div>Model C: {{ (benchmarkRun.macroAverageWer.model_c * 100).toFixed(1) }}%</div>
+            <div class="space-y-1 mt-1">
+              <div v-for="m in benchmarkRun.models" :key="m" class="flex items-center justify-between text-xs">
+                <span class="text-slate-700">{{ catalogLabel(m) }}</span>
+                <strong :class="benchmarkRun.macroAverageWer[m] == null ? 'text-slate-400 font-normal' : 'text-emerald-700'">
+                  {{ fmtPct(benchmarkRun.macroAverageWer[m]) }}
+                </strong>
+              </div>
             </div>
           </div>
 
           <div class="bg-white border border-slate-200 rounded-lg p-4 shadow-xs text-slate-800">
             <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">Macro-Average CER (Lower is Better)</span>
-            <div class="text-xl font-bold text-emerald-700">
-              {{ (benchmarkRun.macroAverageCer.sahara * 100).toFixed(1) }}%
-              <span class="text-xs font-normal text-slate-500 ml-1.5">(Sahara)</span>
-            </div>
-            <div class="text-xs text-slate-500 mt-2 space-y-0.5">
-              <div>Model B: {{ (benchmarkRun.macroAverageCer.model_b * 100).toFixed(1) }}%</div>
-              <div>Model C: {{ (benchmarkRun.macroAverageCer.model_c * 100).toFixed(1) }}%</div>
+            <div class="space-y-1 mt-1">
+              <div v-for="m in benchmarkRun.models" :key="m" class="flex items-center justify-between text-xs">
+                <span class="text-slate-700">{{ catalogLabel(m) }}</span>
+                <strong :class="benchmarkRun.macroAverageCer[m] == null ? 'text-slate-400 font-normal' : 'text-emerald-700'">
+                  {{ fmtPct(benchmarkRun.macroAverageCer[m]) }}
+                </strong>
+              </div>
             </div>
           </div>
 
           <div class="bg-white border border-slate-200 rounded-lg p-4 shadow-xs text-slate-800">
             <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">Avg Response Latency</span>
-            <div class="text-xl font-bold text-slate-900">{{ benchmarkRun.averageLatencyMs.sahara }} ms</div>
-            <div class="text-xs text-slate-500 mt-2 space-y-0.5">
-              <div>Model B: {{ benchmarkRun.averageLatencyMs.model_b }} ms</div>
-              <div>Model C: {{ benchmarkRun.averageLatencyMs.model_c }} ms</div>
+            <div class="space-y-1 mt-1">
+              <div v-for="m in benchmarkRun.models" :key="m" class="flex items-center justify-between text-xs">
+                <span class="text-slate-700">{{ catalogLabel(m) }}</span>
+                <strong :class="benchmarkRun.averageLatencyMs[m] == null ? 'text-slate-400 font-normal' : 'text-slate-900'">
+                  {{ fmtMs(benchmarkRun.averageLatencyMs[m]) }}
+                </strong>
+              </div>
             </div>
           </div>
 
           <div class="bg-white border border-slate-200 rounded-lg p-4 shadow-xs text-slate-800">
             <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">Inference Reliability</span>
-            <div class="text-xl font-bold text-slate-900">{{ benchmarkRun.successRate.sahara }}%</div>
-            <p class="text-xs text-slate-500 mt-2">0 timeouts across {{ benchmarkRun.sampleCount }} clinical instances.</p>
+            <div class="space-y-1 mt-1">
+              <div v-for="m in benchmarkRun.models" :key="m" class="flex items-center justify-between text-xs">
+                <span class="text-slate-700">{{ catalogLabel(m) }}</span>
+                <strong class="text-slate-900">{{ benchmarkRun.successRate[m] }}%</strong>
+              </div>
+            </div>
+            <p class="text-[11px] text-slate-500 mt-2">Across {{ benchmarkRun.sampleCount }} clinical instances.</p>
           </div>
         </div>
 
@@ -358,39 +405,33 @@ function riskBadgeClass(risk: 'low' | 'moderate' | 'high' | 'safe' | 'low_risk' 
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-100">
-                <tr class="bg-emerald-50/40">
+                <tr
+                  v-for="m in benchmarkRun.models"
+                  :key="m"
+                  :class="modelRank.get(m) === 1 ? 'bg-emerald-50/40' : ''"
+                >
                   <td class="py-2.5 px-3 font-semibold text-slate-900 flex items-center gap-1.5">
-                    <span class="w-2 h-2 rounded-full bg-emerald-600" />
-                    <span>Intron Sahara</span>
+                    <span class="w-2 h-2 rounded-full" :class="modelRank.get(m) === 1 ? 'bg-emerald-600' : 'bg-slate-300'" />
+                    <span>{{ catalogLabel(m) }}</span>
                   </td>
-                  <td class="py-2.5 px-3 text-slate-600">African-Acoustic Tuned CTC/Conformer</td>
-                  <td class="py-2.5 px-3 font-bold text-emerald-700">{{ (benchmarkRun.macroAverageWer.sahara * 100).toFixed(1) }}%</td>
-                  <td class="py-2.5 px-3 font-bold text-emerald-700">{{ (benchmarkRun.macroAverageCer.sahara * 100).toFixed(1) }}%</td>
-                  <td class="py-2.5 px-3 text-slate-600">{{ benchmarkRun.averageLatencyMs.sahara }} ms</td>
-                  <td class="py-2.5 px-3 text-slate-600">{{ benchmarkRun.successRate.sahara }}%</td>
+                  <td class="py-2.5 px-3 text-slate-600">{{ ASR_MODEL_CATALOG.find((c) => c.id === m)?.architecture }}</td>
+                  <td class="py-2.5 px-3" :class="benchmarkRun.macroAverageWer[m] == null ? 'text-slate-400' : 'font-bold text-emerald-700'">
+                    {{ fmtPct(benchmarkRun.macroAverageWer[m]) }}
+                  </td>
+                  <td class="py-2.5 px-3" :class="benchmarkRun.macroAverageCer[m] == null ? 'text-slate-400' : 'font-bold text-emerald-700'">
+                    {{ fmtPct(benchmarkRun.macroAverageCer[m]) }}
+                  </td>
+                  <td class="py-2.5 px-3 text-slate-600">{{ fmtMs(benchmarkRun.averageLatencyMs[m]) }}</td>
+                  <td class="py-2.5 px-3 text-slate-600">{{ benchmarkRun.successRate[m] }}%</td>
                   <td class="py-2.5 px-3">
-                    <span class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold border border-emerald-200 text-[10px]">#1 Leading</span>
+                    <span
+                      v-if="modelRank.get(m)"
+                      class="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold border border-emerald-200 text-[10px]"
+                    >
+                      #{{ modelRank.get(m) }}
+                    </span>
+                    <span v-else class="text-slate-400 text-[11px]">Not evaluated</span>
                   </td>
-                </tr>
-
-                <tr>
-                  <td class="py-2.5 px-3 font-medium text-slate-800">Model B (OmniLLM)</td>
-                  <td class="py-2.5 px-3 text-slate-500">General Multimodal Audio LLM</td>
-                  <td class="py-2.5 px-3 text-slate-700">{{ (benchmarkRun.macroAverageWer.model_b * 100).toFixed(1) }}%</td>
-                  <td class="py-2.5 px-3 text-slate-700">{{ (benchmarkRun.macroAverageCer.model_b * 100).toFixed(1) }}%</td>
-                  <td class="py-2.5 px-3 text-slate-500">{{ benchmarkRun.averageLatencyMs.model_b }} ms</td>
-                  <td class="py-2.5 px-3 text-slate-500">{{ benchmarkRun.successRate.model_b }}%</td>
-                  <td class="py-2.5 px-3 text-slate-500">#2 General</td>
-                </tr>
-
-                <tr>
-                  <td class="py-2.5 px-3 font-medium text-slate-800">Model C (Whisper-v3)</td>
-                  <td class="py-2.5 px-3 text-slate-500">Encoder-Decoder Transformer</td>
-                  <td class="py-2.5 px-3 text-slate-700">{{ (benchmarkRun.macroAverageWer.model_c * 100).toFixed(1) }}%</td>
-                  <td class="py-2.5 px-3 text-slate-700">{{ (benchmarkRun.macroAverageCer.model_c * 100).toFixed(1) }}%</td>
-                  <td class="py-2.5 px-3 text-slate-500">{{ benchmarkRun.averageLatencyMs.model_c }} ms</td>
-                  <td class="py-2.5 px-3 text-slate-500">{{ benchmarkRun.successRate.model_c }}%</td>
-                  <td class="py-2.5 px-3 text-slate-500">#3 Standard</td>
                 </tr>
               </tbody>
             </table>
@@ -404,18 +445,27 @@ function riskBadgeClass(risk: 'low' | 'moderate' | 'high' | 'safe' | 'low_risk' 
               <p class="text-xs text-slate-500">Select an utterance to inspect alignment, substitution errors, and code-switching markers.</p>
             </div>
 
-            <div class="flex items-center gap-2">
-              <span class="text-xs text-slate-500">Select Utterance:</span>
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-xs text-slate-500">Utterance:</span>
               <select v-model="inspectedSampleId" class="bg-white border border-slate-300 rounded px-2.5 py-1 text-xs text-slate-800 focus:outline-none focus:border-slate-500">
                 <option v-for="r in benchmarkRun.results" :key="r.sampleId" :value="r.sampleId">
                   [{{ CLINICAL_AUDIO_SAMPLES.find((s) => s.id === r.sampleId)?.language.toUpperCase() }}]
                   {{ CLINICAL_AUDIO_SAMPLES.find((s) => s.id === r.sampleId)?.title }}
                 </option>
               </select>
+
+              <span class="text-xs text-slate-500">Model:</span>
+              <select v-model="inspectedModelId" class="bg-white border border-slate-300 rounded px-2.5 py-1 text-xs text-slate-800 focus:outline-none focus:border-slate-500">
+                <option v-for="m in benchmarkRun.models" :key="m" :value="m">{{ catalogLabel(m) }}</option>
+              </select>
             </div>
           </div>
 
-          <div v-if="activeInspectedResult && activeInspectedSample && saharaDeepDive" class="space-y-4">
+          <div v-if="!activeInspectedResult?.referenceAudioAvailable" class="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-800">
+            Reference audio could not be synthesized for this utterance, so no model could be evaluated against it.
+          </div>
+
+          <div v-else-if="activeInspectedResult && activeInspectedSample && deepDiveResult" class="space-y-4">
             <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div class="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-1">
                 <span class="text-[10px] uppercase font-bold text-slate-600">Ground Truth Clinical Reference</span>
@@ -425,38 +475,47 @@ function riskBadgeClass(risk: 'low' | 'moderate' | 'high' | 'safe' | 'low_risk' 
                 </div>
               </div>
 
-              <div class="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-1">
+              <div v-if="deepDiveResult.success" class="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-1">
                 <div class="flex items-center justify-between">
-                  <span class="text-[10px] uppercase font-bold text-emerald-800">Sahara Hypothesis</span>
+                  <span class="text-[10px] uppercase font-bold text-emerald-800">{{ catalogLabel(inspectedModelId ?? '') }} Hypothesis</span>
                   <span class="text-[10px] text-emerald-800 font-mono">
-                    WER: {{ (saharaDeepDive.wer * 100).toFixed(1) }}% · CER: {{ (saharaDeepDive.cer * 100).toFixed(1) }}%
+                    WER: {{ fmtPct(deepDiveResult.wer) }} · CER: {{ fmtPct(deepDiveResult.cer) }}
                   </span>
                 </div>
-                <p class="text-xs text-slate-800 leading-relaxed">"{{ saharaDeepDive.hypothesisTranscript }}"</p>
+                <p class="text-xs text-slate-800 leading-relaxed">"{{ deepDiveResult.hypothesisTranscript }}"</p>
+              </div>
+
+              <div v-else class="p-3 bg-amber-50 rounded-lg border border-amber-200 space-y-1">
+                <span class="text-[10px] uppercase font-bold text-amber-800">
+                  {{ deepDiveResult.notConfigured ? 'Not Configured' : 'Transcription Failed' }}
+                </span>
+                <p class="text-xs text-amber-900 leading-relaxed">{{ deepDiveResult.error }}</p>
               </div>
             </div>
 
-            <CodeSwitchTimeline :analysis="saharaDeepDive.codeSwitchAnalysis" />
+            <template v-if="deepDiveResult.success">
+              <CodeSwitchTimeline :analysis="deepDiveResult.codeSwitchAnalysis" />
 
-            <div class="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs flex flex-wrap items-center gap-4">
-              <span class="text-slate-600 font-semibold">Error Breakdown:</span>
-              <div class="flex items-center gap-1.5">
-                <span class="w-2 h-2 rounded-full bg-amber-500" />
-                <span>Substitutions: {{ saharaDeepDive.errorAnalysis.substitutions }}</span>
+              <div class="p-3 bg-slate-50 rounded-lg border border-slate-200 text-xs flex flex-wrap items-center gap-4">
+                <span class="text-slate-600 font-semibold">Error Breakdown:</span>
+                <div class="flex items-center gap-1.5">
+                  <span class="w-2 h-2 rounded-full bg-amber-500" />
+                  <span>Substitutions: {{ deepDiveResult.errorAnalysis?.substitutions }}</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <span class="w-2 h-2 rounded-full bg-rose-500" />
+                  <span>Deletions: {{ deepDiveResult.errorAnalysis?.deletions }}</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <span class="w-2 h-2 rounded-full bg-blue-500" />
+                  <span>Insertions: {{ deepDiveResult.errorAnalysis?.insertions }}</span>
+                </div>
+                <div class="flex items-center gap-1.5 text-emerald-700 ml-auto font-medium">
+                  <CheckCircle2 class="w-3.5 h-3.5" />
+                  <span>Real transcription, scored against ground truth</span>
+                </div>
               </div>
-              <div class="flex items-center gap-1.5">
-                <span class="w-2 h-2 rounded-full bg-rose-500" />
-                <span>Deletions: {{ saharaDeepDive.errorAnalysis.deletions }}</span>
-              </div>
-              <div class="flex items-center gap-1.5">
-                <span class="w-2 h-2 rounded-full bg-blue-500" />
-                <span>Insertions: {{ saharaDeepDive.errorAnalysis.insertions }}</span>
-              </div>
-              <div class="flex items-center gap-1.5 text-emerald-700 ml-auto font-medium">
-                <CheckCircle2 class="w-3.5 h-3.5" />
-                <span>Clinical Intent Preserved</span>
-              </div>
-            </div>
+            </template>
           </div>
         </div>
       </div>
