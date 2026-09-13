@@ -205,4 +205,22 @@ export const AVAILABLE_VOICES: VoiceOption[] = [
     language: 'es',
     recommendedFor: 'Immediate local playback in Spanish.',
   },
+  {
+    id: 'browser-default-zh',
+    name: 'Device Native Voice (Chinese)',
+    provider: 'browser',
+    gender: 'neutral',
+    accent: 'Host OS Chinese',
+    language: 'zh',
+    recommendedFor: 'Immediate local playback in Mandarin Chinese.',
+  },
+  {
+    id: 'browser-default-hi',
+    name: 'Device Native Voice (Hindi)',
+    provider: 'browser',
+    gender: 'neutral',
+    accent: 'Host OS Hindi',
+    language: 'hi',
+    recommendedFor: 'Immediate local playback in Hindi.',
+  },
 ];

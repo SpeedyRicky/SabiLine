@@ -419,7 +419,7 @@ Return a JSON object with scores from 1 to 5 (or specified enum):
 app.post('/api/benchmark/run', async (req: Request, res: Response) => {
   const {
     sampleIds = [],
-    selectedModels = ['sahara', 'model_b', 'model_c'],
+    selectedModels = ['sahara', 'model_b', 'model_c'] as string[],
     normalizationOptions = {
       stripPunctuation: true,
       toLowerCase: true,
@@ -450,7 +450,7 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
   const modelLatency: Record<string, number[]> = {};
   const modelSuccess: Record<string, { success: number; total: number }> = {};
 
-  selectedModels.forEach(m => {
+  selectedModels.forEach((m: string) => {
     modelTotalWer[m] = [];
     modelTotalCer[m] = [];
     modelLatency[m] = [];
@@ -550,7 +550,7 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
   const averageLatencyMs: Record<string, number> = {};
   const successRate: Record<string, number> = {};
 
-  selectedModels.forEach(m => {
+  selectedModels.forEach((m: string) => {
     const wers = modelTotalWer[m];
     const cers = modelTotalCer[m];
     const lats = modelLatency[m];
