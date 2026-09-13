@@ -314,14 +314,13 @@ export interface SavedResultItem {
   note?: string;
 }
 
-export interface NormalizationOptions {
-  lowercase: boolean;
-  stripPunctuation: boolean;
-  stripDiacritics: boolean;
-}
+// NOTE: The canonical normalization options type lives in
+// services/benchmark/normalization.ts (it is what calculateWER/calculateCER
+// actually accept). A second, differently-shaped copy used to live here and
+// silently desynced from the engine (`lowercase` vs `toLowerCase`), which is
+// why the benchmark normalization checkboxes had no effect. Import from the
+// services module instead of redeclaring it here.
 
-export interface QAEvaluationResult {
-  overallScore: number;
-  dimensions: Record<string, number>;
-  rationale: string;
-}
+// The clinical QA evaluation UI renders the real AfriHealth rubric returned
+// by /api/qa/evaluate, i.e. SpokenQAEvaluation['scores'] below — not a
+// fictional {overallScore, dimensions, rationale} shape.

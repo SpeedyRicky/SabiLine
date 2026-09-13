@@ -1,6 +1,4 @@
-import React from 'react';
-import { LanguageCode } from '../types';
-import { Stethoscope, AlertCircle, Baby, HeartPulse, Pill, ArrowRightLeft } from 'lucide-react';
+import type { LanguageCode } from '../../types';
 
 export interface HealthcarePreset {
   id: string;
@@ -33,7 +31,7 @@ export const HEALTHCARE_PRESETS: HealthcarePreset[] = [
     category: 'maternal',
     title: 'Igbo: Neonatal Fever Signs',
     language: 'ig',
-    text: 'Ọ bụrụ na ahụ ọkụ abịa ma ọ bụ nwa amụrụ ọhụrụ enwee anya edo edo, kpọtara ya ngwa ngwa n\'ụlọ ọgwụ kacha nso. Ejila mmiri oyi saa nwa nwere ahụ ọkụ.',
+    text: "Ọ bụrụ na ahụ ọkụ abịa ma ọ bụ nwa amụrụ ọhụrụ enwee anya edo edo, kpọtara ya ngwa ngwa n'ụlọ ọgwụ kacha nso. Ejila mmiri oyi saa nwa nwere ahụ ọkụ.",
     description: 'Neonatal care warning broadcast for families in Southeastern Nigeria.',
   },
   {
@@ -77,57 +75,3 @@ export const HEALTHCARE_PRESETS: HealthcarePreset[] = [
     description: 'Endocrinology patient education in Spanish.',
   },
 ];
-
-interface PresetSelectorProps {
-  onSelect: (preset: HealthcarePreset) => void;
-}
-
-export const PresetSelector: React.FC<PresetSelectorProps> = ({ onSelect }) => {
-  const getCategoryIcon = (category: HealthcarePreset['category']) => {
-    switch (category) {
-      case 'maternal':
-        return <Baby className="w-3.5 h-3.5 text-rose-600" />;
-      case 'cardiology':
-        return <HeartPulse className="w-3.5 h-3.5 text-red-600" />;
-      case 'malaria':
-        return <AlertCircle className="w-3.5 h-3.5 text-amber-600" />;
-      case 'pharmacy':
-        return <Pill className="w-3.5 h-3.5 text-blue-600" />;
-      case 'codeswitch':
-        return <ArrowRightLeft className="w-3.5 h-3.5 text-emerald-700" />;
-      default:
-        return <Stethoscope className="w-3.5 h-3.5 text-slate-600" />;
-    }
-  };
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between text-xs text-slate-500">
-        <span className="font-semibold text-slate-700">Healthcare Communication Templates:</span>
-        <span className="text-[11px]">Click to load text</span>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-        {HEALTHCARE_PRESETS.map((preset) => (
-          <button
-            key={preset.id}
-            id={`preset-btn-${preset.id}`}
-            type="button"
-            onClick={() => onSelect(preset)}
-            className="text-left p-2.5 rounded-lg bg-white hover:bg-slate-50 border border-slate-200 hover:border-slate-300 transition-colors shadow-2xs group"
-          >
-            <div className="flex items-center gap-1.5 mb-1">
-              {getCategoryIcon(preset.category)}
-              <span className="text-xs font-semibold text-slate-800 group-hover:text-slate-950 transition-colors truncate">
-                {preset.title}
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-500 line-clamp-2 leading-tight">
-              {preset.description}
-            </p>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-};
