@@ -49,6 +49,9 @@ export interface IntakeTranscribeResponse {
   primaryTranscript: string | null;
   attempts: Record<string, IntakeTranscriptAttempt>;
   gainNormalizationApplied?: boolean;
+  // Present when the request asked for language: 'auto' — the language
+  // Gemini identified the patient as speaking, null if detection failed.
+  detectedLanguage?: LanguageCode | null;
   error?: string;
 }
 

@@ -7,6 +7,7 @@ import { pcmToWavBuffer } from './src/services/tts/pcmToWav';
 import { synthesizeReferenceAudio } from './src/services/tts/geminiSynthesize';
 import { ASR_PROVIDER_REGISTRY, DEFAULT_BENCHMARK_MODELS } from './src/services/asr/registry';
 import { transcribeWithAllProviders, LIVE_ASR_PRIORITY } from './src/services/asr/transcribeLive';
+import { detectLanguageAndTranscribe } from './src/services/asr/detectLanguage';
 import { normalizeQuietAudio } from './src/services/asr/audioPreprocess';
 import { calculateWER } from './src/services/benchmark/wer';
 import { calculateCER } from './src/services/benchmark/cer';
@@ -596,7 +597,7 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
 // configured provider out. Quiet mic recordings get the same gain boost as
 // benchmark reference audio, so soft-spoken patients are still heard clearly.
 app.post('/api/intake/transcribe', async (req: Request, res: Response) => {
-  const { audioBase64, mimeType = 'audio/wav', language = 'en', selectedModels } = req.body;
+  const { audioBase64, mimeType = 'audio/wav', language = 'auto', selectedModels } = req.body;
 
   if (!audioBase64) {
     return res.status(400).json({ success: false, error: 'audioBase64 is required.' });
@@ -615,14 +616,46 @@ app.post('/api/intake/transcribe', async (req: Request, res: Response) => {
     }
   }
 
-  const summary = await transcribeWithAllProviders(
-    processedAudio,
-    mimeType,
-    language as LanguageCode,
-    Array.isArray(selectedModels) && selectedModels.length > 0 ? selectedModels : LIVE_ASR_PRIORITY
-  );
+  const selected: string[] = Array.isArray(selectedModels) && selectedModels.length > 0 ? selectedModels : LIVE_ASR_PRIORITY;
 
-  res.json({ success: true, gainNormalizationApplied, ...summary });
+  // Browser speech recognition needs a language picked in advance, so real
+  // auto-detection has to go through a model that can listen first and
+  // classify after — the patient is never asked to pick a language.
+  let resolvedLanguage: LanguageCode = language === 'auto' ? 'en' : (language as LanguageCode);
+  let detectedLanguage: LanguageCode | null = null;
+  let geminiTranscript: string | null = null;
+
+  if (language === 'auto') {
+    const detection = await detectLanguageAndTranscribe(processedAudio, mimeType);
+    if (!detection.success || !detection.languageCode) {
+      return res.json({
+        success: true,
+        gainNormalizationApplied,
+        detectedLanguage: null,
+        primaryProviderId: null,
+        primaryTranscript: null,
+        attempts: {
+          gemini: { success: false, error: detection.error, latencyMs: detection.latencyMs },
+        },
+      });
+    }
+    resolvedLanguage = detection.languageCode;
+    detectedLanguage = detection.languageCode;
+    geminiTranscript = detection.transcript ?? null;
+  }
+
+  const otherModels = geminiTranscript ? selected.filter((id) => id !== 'gemini') : selected;
+  const summary = await transcribeWithAllProviders(processedAudio, mimeType, resolvedLanguage, otherModels);
+
+  if (geminiTranscript) {
+    summary.attempts.gemini = { success: true, transcript: geminiTranscript, latencyMs: 0 };
+    if (!summary.primaryProviderId) {
+      summary.primaryProviderId = 'gemini';
+      summary.primaryTranscript = geminiTranscript;
+    }
+  }
+
+  res.json({ success: true, gainNormalizationApplied, detectedLanguage, ...summary });
 });
 
 // Patient Intake: structured intent extraction from the ASR transcript. On a

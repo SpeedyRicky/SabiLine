@@ -16,13 +16,15 @@ transparent way to compare how well different speech models actually perform on 
 - **Voice Generator** — turn text into real synthesized speech in 8 languages (English, French, Chinese,
   Hindi, Spanish, Igbo, Hausa, Yoruba), with Hausa/Igbo/Yoruba treated as first-class languages with
   dedicated native voices, plus multi-language batch generation and side-by-side audio comparison.
-- **Patient Voice Intake** — a "press to talk" spoken check-in flow: real mic audio is transcribed by
-  every configured ASR provider (Sahara + the two custom benchmark endpoints, with Gemini as a working
-  fallback), a structured clinical intake record (name, age/DOB, payment type, reason for visit, symptom
-  duration, allergies) is extracted from the transcript, and the system either confirms the record back by
-  voice or asks one spoken follow-up question when confidence is low before finalizing. The finished record
-  is shown as JSON and queued in a local "front desk" list, honestly flagged for manual review whenever
-  confidence stays low even after the follow-up.
+- **Patient Voice Intake** — a "press to talk" spoken check-in flow with no language picker: the first
+  turn's audio goes to Gemini for combined language identification + transcription (English, Nigerian
+  Pidgin, Yoruba, Igbo, or Hausa), then that same clip is sent to every other configured ASR provider
+  (Sahara, the two custom benchmark endpoints) for comparison. A structured clinical intake record (name,
+  age/DOB, payment type, reason for visit, symptom duration, allergies) is extracted from the transcript,
+  and the system either confirms the record back by voice or asks one spoken follow-up question — in the
+  same detected language — when confidence is low before finalizing. The finished record is shown as JSON
+  and queued in a local "front desk" list, honestly flagged for manual review whenever confidence stays low
+  even after the follow-up.
 - **Speech Benchmark** — run Word Error Rate / Character Error Rate evaluation across three ASR model
   identities (Sahara, Model B, Model C) on a de-identified clinical audio sample set, with configurable
   text normalization and per-utterance error inspection.

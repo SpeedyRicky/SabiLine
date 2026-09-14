@@ -39,8 +39,9 @@ type Phase =
   | 'error';
 
 const QUEUE_STORAGE_KEY = 'afrivoice_intake_queue';
-const INTAKE_LANGUAGE_CODES: LanguageCode[] = ['en', 'yo', 'ig', 'ha', 'pcm'];
-const INTAKE_LANGUAGES = LANGUAGES.filter((l) => INTAKE_LANGUAGE_CODES.includes(l.code));
+const LANGUAGE_LABEL: Partial<Record<LanguageCode, string>> = Object.fromEntries(
+  LANGUAGES.map((l) => [l.code, l.name])
+);
 
 const EMPTY_FIELDS: IntakeFields = {
   name: null,
@@ -51,7 +52,7 @@ const EMPTY_FIELDS: IntakeFields = {
   allergies: null,
 };
 
-const selectedLanguage = ref<LanguageCode>('en');
+const detectedLanguage = ref<LanguageCode | null>(null);
 const phase = ref<Phase>('idle');
 const turnIndex = ref(0); // 0 = first turn, 1 = follow-up turn
 const errorMessage = ref<string | null>(null);
@@ -123,6 +124,7 @@ function resetForNewIntake() {
   gainNormalizationApplied.value = false;
   lastSpeechFallback.value = null;
   finalRecord.value = null;
+  detectedLanguage.value = null;
 }
 
 async function startRecording() {
@@ -184,10 +186,14 @@ async function handleRecordingStopped() {
 }
 
 async function processTurn(audioBase64: string) {
+  // Only the first turn needs detection — a follow-up in the same
+  // conversation is assumed to stay in the language already identified.
+  const languageForRequest = detectedLanguage.value ?? 'auto';
+
   const transcribeRes = await fetch('/api/intake/transcribe', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ audioBase64, mimeType: 'audio/wav', language: selectedLanguage.value }),
+    body: JSON.stringify({ audioBase64, mimeType: 'audio/wav', language: languageForRequest }),
   });
   const transcribeData: IntakeTranscribeResponse = await transcribeRes.json();
 
@@ -197,6 +203,10 @@ async function processTurn(audioBase64: string) {
     return;
   }
 
+  if (transcribeData.detectedLanguage) {
+    detectedLanguage.value = transcribeData.detectedLanguage;
+  }
+
   asrAttempts.value = transcribeData.attempts;
   primaryAsrProviderId.value = transcribeData.primaryProviderId;
   gainNormalizationApplied.value = Boolean(transcribeData.gainNormalizationApplied);
@@ -204,7 +214,9 @@ async function processTurn(audioBase64: string) {
   if (!transcribeData.primaryTranscript) {
     phase.value = 'error';
     errorMessage.value =
-      "Sorry, none of the configured speech models could make out what was said. Please try speaking again, closer to the microphone.";
+      languageForRequest === 'auto'
+        ? "Sorry, I couldn't make out what language was spoken or what was said. Please try again, closer to the microphone."
+        : "Sorry, none of the configured speech models could make out what was said. Please try speaking again, closer to the microphone.";
     return;
   }
 
@@ -216,7 +228,7 @@ async function processTurn(audioBase64: string) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       transcript: transcribeData.primaryTranscript,
-      language: selectedLanguage.value,
+      language: detectedLanguage.value ?? 'en',
       previousFields: turnIndex.value > 0 ? editableFields.value : undefined,
     }),
   });
@@ -246,7 +258,7 @@ async function processTurn(audioBase64: string) {
 async function askFollowUp(question: string) {
   phase.value = 'confirming';
   turnIndex.value = 1;
-  const outcome = await speakAloud(question, selectedLanguage.value);
+  const outcome = await speakAloud(question, detectedLanguage.value ?? 'en');
   lastSpeechFallback.value = outcome.usedProvider === 'browser' ? outcome.fallbackReason ?? null : null;
   // The mic re-activates automatically for the patient's answer — no extra
   // tap required, so the follow-up loop reads as one continuous exchange.
@@ -275,14 +287,14 @@ async function finalizeIntake() {
   const confirmationText = parts.join(' ');
 
   phase.value = 'confirming';
-  const outcome = await speakAloud(confirmationText, selectedLanguage.value);
+  const outcome = await speakAloud(confirmationText, detectedLanguage.value ?? 'en');
   lastSpeechFallback.value = outcome.usedProvider === 'browser' ? outcome.fallbackReason ?? null : null;
 
   const record: IntakeRecord = {
     id: `INTAKE-${Date.now()}`,
     referenceNumber: generateReferenceNumber(),
     createdAt: new Date().toISOString(),
-    language: selectedLanguage.value,
+    language: detectedLanguage.value ?? 'en',
     transcriptTurns: transcriptTurns.value,
     fields: f,
     overallConfidence: overallConfidence.value ?? 0,
@@ -321,22 +333,15 @@ function clearQueue() {
         SabiLine Patient Intake
       </h1>
       <p class="text-sm text-slate-600 mt-1">
-        Tap to speak — English, Yoruba, Igbo, Hausa, or Pidgin.
+        Tap to speak in English, Yoruba, Igbo, Hausa, or Pidgin — no need to pick one, I'll figure it out from your voice.
       </p>
     </div>
 
     <div class="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
-      <div class="flex items-center justify-center gap-3 flex-wrap">
-        <label class="text-xs font-medium text-slate-600">
-          Language
-          <select
-            v-model="selectedLanguage"
-            :disabled="phase !== 'idle' && phase !== 'error'"
-            class="ml-2 border border-slate-300 rounded-md text-sm px-2 py-1"
-          >
-            <option v-for="lang in INTAKE_LANGUAGES" :key="lang.code" :value="lang.code">{{ lang.flag }} {{ lang.name }}</option>
-          </select>
-        </label>
+      <div v-if="detectedLanguage" class="flex items-center justify-center">
+        <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800">
+          Detected language: {{ LANGUAGE_LABEL[detectedLanguage] || detectedLanguage }}
+        </span>
       </div>
 
       <!-- Mic control -->
