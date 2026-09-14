@@ -625,4 +625,18 @@ async function startServer() {
   });
 }
 
-startServer();
+// Exported so api/index.ts can hand this same Express app to Vercel's Node
+// serverless runtime (Vercel invokes the app directly per-request instead
+// of via a long-running listener). All routes above are registered at
+// module load time regardless of this export, so they're already attached
+// by the time an importer receives `app`.
+export default app;
+
+// Vercel sets VERCEL=1 in both its build and runtime environments. Only run
+// our own long-running server (Vite middleware in dev, static file serving
+// + app.listen in `npm start`) when NOT deployed on Vercel — its platform
+// serves the static build output directly and invokes api/index.ts as a
+// serverless function per request instead.
+if (!process.env.VERCEL) {
+  startServer();
+}
