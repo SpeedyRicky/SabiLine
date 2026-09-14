@@ -1,6 +1,6 @@
 // Central Types for AfriVoice Studio & Sahara CodeSwitch Challenge
 
-export type LanguageCode = 'en' | 'fr' | 'zh' | 'hi' | 'es' | 'ig' | 'ha' | 'yo';
+export type LanguageCode = 'en' | 'fr' | 'zh' | 'hi' | 'es' | 'ig' | 'ha' | 'yo' | 'pcm';
 
 export interface LanguageInfo {
   code: LanguageCode;
@@ -43,6 +43,15 @@ export const LANGUAGES: LanguageInfo[] = [
     flag: '🇳🇬',
     description: 'Highly tonal language spoken by ~50 million people featuring distinctive tonal diacritics (acute, grave, macron).',
     diacriticsSupported: true,
+  },
+  {
+    code: 'pcm',
+    name: 'Nigerian Pidgin',
+    nativeName: 'Naija',
+    african: true,
+    region: 'Nigeria & West African coast',
+    flag: '🇳🇬',
+    description: 'The most common code-switch base in everyday Nigerian speech, blending English with Yoruba, Igbo, and Hausa vocabulary and grammar.',
   },
   {
     code: 'en',

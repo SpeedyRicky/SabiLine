@@ -2,10 +2,12 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
 import { Modality } from '@google/genai';
-import { getGeminiClient } from './src/services/tts/geminiClient';
+import { getGeminiClient, isQuotaExceededError } from './src/services/tts/geminiClient';
 import { pcmToWavBuffer } from './src/services/tts/pcmToWav';
 import { synthesizeReferenceAudio } from './src/services/tts/geminiSynthesize';
 import { ASR_PROVIDER_REGISTRY, DEFAULT_BENCHMARK_MODELS } from './src/services/asr/registry';
+import { transcribeWithAllProviders, LIVE_ASR_PRIORITY } from './src/services/asr/transcribeLive';
+import { normalizeQuietAudio } from './src/services/asr/audioPreprocess';
 import { calculateWER } from './src/services/benchmark/wer';
 import { calculateCER } from './src/services/benchmark/cer';
 import { calculateAccuracy } from './src/services/benchmark/accuracy';
@@ -248,9 +250,13 @@ app.post('/api/tts/generate', async (req: Request, res: Response) => {
       });
     } catch (err: any) {
       console.error('Gemini TTS error:', err);
-      return res.status(500).json({
+      const quotaExceeded = isQuotaExceededError(err);
+      return res.status(quotaExceeded ? 429 : 500).json({
         success: false,
-        error: `Gemini Voice generation failed: ${err.message || 'Internal error'}`,
+        quotaExceeded,
+        error: quotaExceeded
+          ? "Gemini's free-tier voice generation quota is exhausted for today. Switch to Device Web Speech, or enable billing on your Gemini API key for higher limits."
+          : `Gemini Voice generation failed: ${err.message || 'Internal error'}`,
       });
     }
   }
@@ -584,6 +590,103 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
         : `Evaluated ${targetSamples.length} de-identified clinical instances across ${(selectedModels as string[]).length} speech models, using synthesized reference audio transcribed live by each model.`,
     },
   });
+});
+
+// Patient Intake: live ASR — one real audio clip in, transcripts from every
+// configured provider out. Quiet mic recordings get the same gain boost as
+// benchmark reference audio, so soft-spoken patients are still heard clearly.
+app.post('/api/intake/transcribe', async (req: Request, res: Response) => {
+  const { audioBase64, mimeType = 'audio/wav', language = 'en', selectedModels } = req.body;
+
+  if (!audioBase64) {
+    return res.status(400).json({ success: false, error: 'audioBase64 is required.' });
+  }
+
+  let processedAudio = audioBase64;
+  let gainNormalizationApplied = false;
+  if (mimeType === 'audio/wav') {
+    try {
+      const wavBuffer = Buffer.from(audioBase64, 'base64');
+      const { buffer, applied } = normalizeQuietAudio(wavBuffer);
+      processedAudio = buffer.toString('base64');
+      gainNormalizationApplied = applied;
+    } catch {
+      // Normalization couldn't parse this buffer; transcribe it unchanged.
+    }
+  }
+
+  const summary = await transcribeWithAllProviders(
+    processedAudio,
+    mimeType,
+    language as LanguageCode,
+    Array.isArray(selectedModels) && selectedModels.length > 0 ? selectedModels : LIVE_ASR_PRIORITY
+  );
+
+  res.json({ success: true, gainNormalizationApplied, ...summary });
+});
+
+// Patient Intake: structured intent extraction from the ASR transcript. On a
+// second turn (after a low-confidence follow-up), previousFields carries
+// what was already captured so the model merges rather than starts over.
+app.post('/api/intake/extract', async (req: Request, res: Response) => {
+  const { transcript, language = 'en', previousFields } = req.body;
+
+  if (!transcript || !String(transcript).trim()) {
+    return res.status(400).json({ success: false, error: 'transcript is required.' });
+  }
+
+  const ai = getGeminiClient();
+  if (!ai) {
+    return res.status(400).json({
+      success: false,
+      error: 'GEMINI_API_KEY is required for intake intent extraction.',
+    });
+  }
+
+  const previousFieldsBlock: string = previousFields
+    ? `\nFields already captured from an earlier turn in this same intake (keep these unless the transcript below clearly corrects one of them):\n${JSON.stringify(previousFields)}\n`
+    : '';
+
+  try {
+    const prompt = `You are a clinical front-desk intake assistant processing a spoken patient check-in for an African healthcare clinic. The patient's utterance was transcribed from ${language} speech and may include code-switching between languages.
+${previousFieldsBlock}
+Transcript to extract from:
+"${transcript}"
+
+Extract these six fields. Use null (not an empty string, not a guess) for anything not actually stated:
+- name
+- ageOrDob
+- paymentType (e.g. cash, NHIS/insurance, employer scheme — use the patient's own words)
+- reasonForVisit
+- symptomDuration
+- allergies
+
+For each field give a confidence from 0 to 1 reflecting how clearly the transcript states it (0 if null). Give an overallConfidence from 0 to 1 for the whole record. List any field names that are missing or unclear in missingOrUnclearFields. If overallConfidence is below 0.7, write ONE short, natural, spoken follow-up question (in ${language} if reasonably possible, otherwise English) that asks about the single most important missing/unclear field — prioritize reasonForVisit, then name, then paymentType — in followUpQuestion; otherwise set followUpQuestion to null.
+
+Return ONLY this JSON shape:
+{
+  "fields": { "name": string|null, "ageOrDob": string|null, "paymentType": string|null, "reasonForVisit": string|null, "symptomDuration": string|null, "allergies": string|null },
+  "confidencePerField": { "name": number, "ageOrDob": number, "paymentType": number, "reasonForVisit": number, "symptomDuration": number, "allergies": number },
+  "overallConfidence": number,
+  "missingOrUnclearFields": string[],
+  "followUpQuestion": string|null
+}`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: prompt,
+      config: { responseMimeType: 'application/json' },
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    return res.json({ success: true, ...parsed });
+  } catch (err: any) {
+    console.error('Intake extraction error:', err);
+    return res.status(500).json({
+      success: false,
+      error: `Intake extraction failed: ${err.message || 'Gemini error'}`,
+    });
+  }
 });
 
 // 8. Reference data endpoint

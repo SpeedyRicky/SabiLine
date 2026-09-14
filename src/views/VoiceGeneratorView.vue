@@ -86,6 +86,34 @@ function onVoiceChange(e: Event) {
   if (voiceObj) selectedProvider.value = voiceObj.provider;
 }
 
+function synthesizeViaBrowser(note?: string): TTSResult {
+  if (!('speechSynthesis' in window)) {
+    throw new Error('Web Speech API is not supported by your browser.');
+  }
+
+  const utterance = new SpeechSynthesisUtterance(text.value);
+  utterance.rate = speed.value;
+
+  const synth = window.speechSynthesis;
+  const voices = synth.getVoices();
+  const matchingOsVoice = voices.find((v) => v.lang.startsWith(selectedLang.value));
+  if (matchingOsVoice) utterance.voice = matchingOsVoice;
+
+  synth.speak(utterance);
+
+  return {
+    id: `TTS-${Date.now()}`,
+    text: text.value,
+    language: selectedLang.value,
+    voiceId: selectedVoiceId.value,
+    provider: 'browser',
+    mimeType: 'audio/wav',
+    durationSec: Math.max(2, Math.round(wordCount.value * 0.4)),
+    timestamp: new Date().toISOString(),
+    note: note || 'Synthesized via local Device Web Speech',
+  };
+}
+
 async function handleGenerate() {
   if (!text.value.trim()) {
     errorMessage.value = 'Please enter some text to synthesize.';
@@ -98,32 +126,7 @@ async function handleGenerate() {
 
   try {
     if (selectedProvider.value === 'browser') {
-      if (!('speechSynthesis' in window)) {
-        throw new Error('Web Speech API is not supported by your browser.');
-      }
-
-      const utterance = new SpeechSynthesisUtterance(text.value);
-      utterance.rate = speed.value;
-
-      const synth = window.speechSynthesis;
-      const voices = synth.getVoices();
-      const matchingOsVoice = voices.find((v) => v.lang.startsWith(selectedLang.value));
-      if (matchingOsVoice) utterance.voice = matchingOsVoice;
-
-      synth.speak(utterance);
-
-      const dummyResult: TTSResult = {
-        id: `TTS-${Date.now()}`,
-        text: text.value,
-        language: selectedLang.value,
-        voiceId: selectedVoiceId.value,
-        provider: 'browser',
-        mimeType: 'audio/wav',
-        durationSec: Math.max(2, Math.round(wordCount.value * 0.4)),
-        timestamp: new Date().toISOString(),
-        note: 'Synthesized via local Device Web Speech',
-      };
-
+      const dummyResult = synthesizeViaBrowser();
       if (lastResult.value) previousResult.value = lastResult.value;
       lastResult.value = dummyResult;
       isGenerating.value = false;
@@ -146,6 +149,17 @@ async function handleGenerate() {
     const data = await response.json();
 
     if (!response.ok || !data.success) {
+      // Gemini's free-tier quota runs out fast — fall back to device speech
+      // automatically instead of leaving the user with a dead-end error.
+      if (data.quotaExceeded && selectedProvider.value === 'gemini') {
+        const fallbackResult = synthesizeViaBrowser(
+          `Gemini's free-tier voice quota is exhausted for today, so this was spoken via Device Web Speech instead. (${data.error})`
+        );
+        if (lastResult.value) previousResult.value = lastResult.value;
+        lastResult.value = fallbackResult;
+        errorMessage.value = null;
+        return;
+      }
       throw new Error(data.error || 'Speech generation failed.');
     }
 

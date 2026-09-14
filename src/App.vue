@@ -4,6 +4,7 @@ import Navbar from './components/Navbar.vue';
 import type { NavTab } from './components/navTabs';
 import HomeView from './views/HomeView.vue';
 import VoiceGeneratorView from './views/VoiceGeneratorView.vue';
+import IntakeView from './views/IntakeView.vue';
 import ResultsView from './views/ResultsView.vue';
 import BenchmarkView from './views/BenchmarkView.vue';
 import CodeSwitchView from './views/CodeSwitchView.vue';
@@ -128,6 +129,8 @@ function providerStatus() {
           @save-to-library="handleSaveToLibrary"
         />
 
+        <IntakeView v-else-if="activeTab === 'intake'" />
+
         <ResultsView
           v-else-if="activeTab === 'results'"
           :results="savedResults"
@@ -161,6 +164,7 @@ function providerStatus() {
           <div class="flex flex-wrap items-center justify-center gap-4 text-xs text-slate-600">
             <button class="hover:text-slate-900 transition-colors" @click="activeTab = 'home'">Home</button>
             <button class="hover:text-slate-900 transition-colors" @click="activeTab = 'generator'">Voice Generator</button>
+            <button class="hover:text-slate-900 transition-colors" @click="activeTab = 'intake'">Patient Intake</button>
             <button class="hover:text-slate-900 transition-colors" @click="activeTab = 'benchmark'">Benchmark</button>
             <button class="hover:text-slate-900 transition-colors" @click="activeTab = 'codeswitch'">Code-Switching</button>
             <button class="hover:text-slate-900 transition-colors" @click="activeTab = 'methodology'">Methodology</button>
