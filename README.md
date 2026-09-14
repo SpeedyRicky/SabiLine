@@ -67,9 +67,10 @@ npm run dev             # http://localhost:3000
 
 | Variable | Required for | Behavior when unset |
 |---|---|---|
-| `GEMINI_API_KEY` | Gemini TTS, translation, QA judge | Those features return an explicit "not configured" error; the rest of the app keeps working. |
-| `SAHARA_API_KEY` | Intron Sahara native African TTS | Sahara option shows "not configured"; switch to Gemini or Device Speech instead. |
-| `MODEL_B_API_KEY` / `MODEL_C_API_KEY` | Reserved for wiring in real secondary ASR providers | Benchmark tab uses its built-in comparison identities. |
+| `GEMINI_API_KEY` | Gemini TTS, translation, QA judge, and the real Gemini ASR benchmark provider (also synthesizes the reference audio every benchmark run evaluates against) | Those features return an explicit "not configured" error; the rest of the app keeps working. |
+| `SAHARA_TTS_API_KEY` | Intron Sahara native African TTS (Voice Generator) | Sahara option shows "not configured"; switch to Gemini or Device Speech instead. |
+| `SAHARA_STT_API_KEY` | Intron Sahara as a real ASR provider in the Benchmark tab | Sahara is honestly reported as "not configured" and excluded from benchmark averages. These are separate keys — configuring one does not configure the other. |
+| `MODEL_B_API_KEY` + `MODEL_B_API_URL` / `MODEL_C_API_KEY` + `MODEL_C_API_URL` | Bring-your-own real ASR endpoint for the Benchmark tab (no vendor assumed) | Reported as "not configured" and excluded from benchmark averages. |
 
 No API key is ever sent to or read from the browser — all provider calls happen inside `server.ts`.
 
@@ -98,9 +99,12 @@ statement, including the explicit acknowledgment that this tool does not provide
 
 ## Known limitations
 
-- The "Live Benchmark" ASR hypotheses are deterministic, calibrated simulations of model behavior (not
-  live calls to three real ASR APIs), consistent with how this benchmark tab shipped from AI Studio. If you
-  wire in real `MODEL_B_API_KEY` / `MODEL_C_API_KEY` providers, replace the simulation block in
-  `server.ts`'s `/api/benchmark/run` handler with real calls.
+- The "Live Benchmark" evaluates real ASR providers on real synthesized audio — no more simulated
+  hypotheses — but it can only evaluate whichever providers actually have credentials configured. With
+  only `GEMINI_API_KEY` set, Gemini is the sole model evaluated; the others are honestly reported as "not
+  configured" rather than faked. See `src/services/asr/` to wire in real Sahara/Model B/Model C credentials.
+- Reference audio for every benchmark run is synthesized via Gemini's TTS-preview model, which has its own
+  separate free-tier quota (10 requests/day) distinct from Gemini's other quotas. Exhausting it blocks new
+  benchmark runs until it resets, even if an ASR provider itself has quota to spare.
 - Browser/device speech (`provider: "browser"`) plays once locally via the Web Speech API and cannot be
   saved as an audio file — the UI states this explicitly rather than showing a non-functional player.

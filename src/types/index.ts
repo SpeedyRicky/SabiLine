@@ -213,6 +213,8 @@ export interface ModelInferenceResult {
   error?: string;
   wer?: number;
   cer?: number;
+  // 1 - WER, clamped to [0, 1]. See src/services/benchmark/accuracy.ts.
+  accuracy?: number;
   errorAnalysis?: ErrorAnalysis;
   codeSwitchAnalysis?: CodeSwitchAnalysis;
 }
@@ -271,6 +273,7 @@ export interface BenchmarkRun {
   // or every attempt failed) — distinct from a real 0, never fabricated.
   macroAverageWer: Record<string, number | null>;
   macroAverageCer: Record<string, number | null>;
+  macroAverageAccuracy: Record<string, number | null>;
   averageLatencyMs: Record<string, number | null>;
   successRate: Record<string, number>;
   status: 'running' | 'completed' | 'partial' | 'failed';

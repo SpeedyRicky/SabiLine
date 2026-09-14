@@ -333,7 +333,7 @@ const modelRank = computed(() => {
           <span>{{ benchmarkRun.summaryNote }}</span>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           <div class="bg-white border border-slate-200 rounded-lg p-4 shadow-xs text-slate-800">
             <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">Macro-Average WER (Lower is Better)</span>
             <div class="space-y-1 mt-1">
@@ -356,6 +356,19 @@ const modelRank = computed(() => {
                 </strong>
               </div>
             </div>
+          </div>
+
+          <div class="bg-white border border-slate-200 rounded-lg p-4 shadow-xs text-slate-800">
+            <span class="text-[11px] font-semibold text-slate-500 uppercase tracking-wide block mb-1">Accuracy (Higher is Better)</span>
+            <div class="space-y-1 mt-1">
+              <div v-for="m in benchmarkRun.models" :key="m" class="flex items-center justify-between text-xs">
+                <span class="text-slate-700">{{ catalogLabel(m) }}</span>
+                <strong :class="benchmarkRun.macroAverageAccuracy[m] == null ? 'text-slate-400 font-normal' : 'text-emerald-700'">
+                  {{ fmtPct(benchmarkRun.macroAverageAccuracy[m]) }}
+                </strong>
+              </div>
+            </div>
+            <p class="text-[11px] text-slate-500 mt-2">1 − WER, word-level.</p>
           </div>
 
           <div class="bg-white border border-slate-200 rounded-lg p-4 shadow-xs text-slate-800">
@@ -399,6 +412,7 @@ const modelRank = computed(() => {
                   <th class="py-2 px-3">Architecture</th>
                   <th class="py-2 px-3">Macro WER</th>
                   <th class="py-2 px-3">Macro CER</th>
+                  <th class="py-2 px-3">Accuracy</th>
                   <th class="py-2 px-3">Latency</th>
                   <th class="py-2 px-3">Success Rate</th>
                   <th class="py-2 px-3">Ranking</th>
@@ -420,6 +434,9 @@ const modelRank = computed(() => {
                   </td>
                   <td class="py-2.5 px-3" :class="benchmarkRun.macroAverageCer[m] == null ? 'text-slate-400' : 'font-bold text-emerald-700'">
                     {{ fmtPct(benchmarkRun.macroAverageCer[m]) }}
+                  </td>
+                  <td class="py-2.5 px-3" :class="benchmarkRun.macroAverageAccuracy[m] == null ? 'text-slate-400' : 'font-bold text-emerald-700'">
+                    {{ fmtPct(benchmarkRun.macroAverageAccuracy[m]) }}
                   </td>
                   <td class="py-2.5 px-3 text-slate-600">{{ fmtMs(benchmarkRun.averageLatencyMs[m]) }}</td>
                   <td class="py-2.5 px-3 text-slate-600">{{ benchmarkRun.successRate[m] }}%</td>
@@ -479,7 +496,7 @@ const modelRank = computed(() => {
                 <div class="flex items-center justify-between">
                   <span class="text-[10px] uppercase font-bold text-emerald-800">{{ catalogLabel(inspectedModelId ?? '') }} Hypothesis</span>
                   <span class="text-[10px] text-emerald-800 font-mono">
-                    WER: {{ fmtPct(deepDiveResult.wer) }} · CER: {{ fmtPct(deepDiveResult.cer) }}
+                    WER: {{ fmtPct(deepDiveResult.wer) }} · CER: {{ fmtPct(deepDiveResult.cer) }} · Accuracy: {{ fmtPct(deepDiveResult.accuracy) }}
                   </span>
                 </div>
                 <p class="text-xs text-slate-800 leading-relaxed">"{{ deepDiveResult.hypothesisTranscript }}"</p>

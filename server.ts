@@ -8,6 +8,7 @@ import { synthesizeReferenceAudio } from './src/services/tts/geminiSynthesize';
 import { ASR_PROVIDER_REGISTRY, DEFAULT_BENCHMARK_MODELS } from './src/services/asr/registry';
 import { calculateWER } from './src/services/benchmark/wer';
 import { calculateCER } from './src/services/benchmark/cer';
+import { calculateAccuracy } from './src/services/benchmark/accuracy';
 import { performErrorAnalysis, analyzeCodeSwitching } from './src/services/benchmark/errorAnalysis';
 import { calculateSentenceBLEU, calculateChrF } from './src/services/benchmark/bleu';
 import { CLINICAL_AUDIO_SAMPLES } from './src/services/benchmark/sampleDataset';
@@ -33,17 +34,27 @@ app.get('/api/health', (req: Request, res: Response) => {
 // 2. Provider configuration status (honest and transparent)
 app.get('/api/providers/status', (req: Request, res: Response) => {
   const hasGemini = Boolean(process.env.GEMINI_API_KEY);
-  const hasSahara = Boolean(process.env.SAHARA_API_KEY);
+  const hasSaharaTts = Boolean(process.env.SAHARA_TTS_API_KEY);
+  const hasSaharaStt = ASR_PROVIDER_REGISTRY.sahara.isConfigured();
 
   res.json({
     providers: {
       sahara: {
         id: 'sahara',
-        name: 'Intron Sahara',
-        isConfigured: hasSahara,
-        statusMessage: hasSahara
+        name: 'Intron Sahara (TTS)',
+        isConfigured: hasSaharaTts,
+        statusMessage: hasSaharaTts
           ? 'Connected (Native African Speech Models active)'
-          : 'Awaiting SAHARA_API_KEY in server secrets',
+          : 'Awaiting SAHARA_TTS_API_KEY in server secrets',
+        supportedLanguages: ['ha', 'ig', 'yo', 'en'],
+      },
+      sahara_stt: {
+        id: 'sahara_stt',
+        name: 'Intron Sahara (STT / Benchmark)',
+        isConfigured: hasSaharaStt,
+        statusMessage: hasSaharaStt
+          ? 'Connected (used as a real ASR provider in the Benchmark tab)'
+          : 'Awaiting SAHARA_STT_API_KEY in server secrets',
         supportedLanguages: ['ha', 'ig', 'yo', 'en'],
       },
       gemini: {
@@ -116,11 +127,11 @@ app.post('/api/tts/generate', async (req: Request, res: Response) => {
 
   // Handle Sahara Provider
   if (provider === 'sahara') {
-    const saharaKey = process.env.SAHARA_API_KEY;
+    const saharaKey = process.env.SAHARA_TTS_API_KEY;
     if (!saharaKey) {
       return res.status(400).json({
         success: false,
-        error: 'Sahara API key is not configured in server environment. Please set SAHARA_API_KEY in secrets, or choose Gemini 3.1 Flash Voice / Device Web Speech.',
+        error: 'Sahara TTS API key is not configured in server environment. Please set SAHARA_TTS_API_KEY in secrets, or choose Gemini 3.1 Flash Voice / Device Web Speech.',
         provider: 'sahara',
       });
     }
@@ -430,12 +441,14 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
   }> = [];
   const modelTotalWer: Record<string, number[]> = {};
   const modelTotalCer: Record<string, number[]> = {};
+  const modelTotalAccuracy: Record<string, number[]> = {};
   const modelLatency: Record<string, number[]> = {};
   const modelSuccess: Record<string, { success: number; total: number }> = {};
 
   (selectedModels as string[]).forEach((m) => {
     modelTotalWer[m] = [];
     modelTotalCer[m] = [];
+    modelTotalAccuracy[m] = [];
     modelLatency[m] = [];
     modelSuccess[m] = { success: 0, total: 0 };
   });
@@ -487,11 +500,13 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
       const hypothesis = transcription.transcript;
       const werCalc = calculateWER(ref, hypothesis, normalizationOptions);
       const cerCalc = calculateCER(ref, hypothesis, normalizationOptions);
+      const accuracy = calculateAccuracy(werCalc.wer);
       const csAnalysis = isCodeSwitched ? analyzeCodeSwitching(ref, sample.language) : undefined;
       const errorAnalysis = performErrorAnalysis(ref, hypothesis, csAnalysis);
 
       modelTotalWer[modelId].push(werCalc.wer);
       modelTotalCer[modelId].push(cerCalc.cer);
+      modelTotalAccuracy[modelId].push(accuracy);
       modelLatency[modelId].push(transcription.latencyMs);
       modelSuccess[modelId].success += 1;
 
@@ -503,6 +518,7 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
         success: true,
         wer: werCalc.wer,
         cer: cerCalc.cer,
+        accuracy,
         errorAnalysis,
         codeSwitchAnalysis: csAnalysis,
       };
@@ -524,17 +540,22 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
   // rather than a fabricated or misleading 0.
   const macroAverageWer: Record<string, number | null> = {};
   const macroAverageCer: Record<string, number | null> = {};
+  const macroAverageAccuracy: Record<string, number | null> = {};
   const averageLatencyMs: Record<string, number | null> = {};
   const successRate: Record<string, number> = {};
 
   (selectedModels as string[]).forEach((m) => {
     const wers = modelTotalWer[m];
     const cers = modelTotalCer[m];
+    const accuracies = modelTotalAccuracy[m];
     const lats = modelLatency[m];
     const succ = modelSuccess[m];
 
     macroAverageWer[m] = wers.length ? Number((wers.reduce((a, b) => a + b, 0) / wers.length).toFixed(4)) : null;
     macroAverageCer[m] = cers.length ? Number((cers.reduce((a, b) => a + b, 0) / cers.length).toFixed(4)) : null;
+    macroAverageAccuracy[m] = accuracies.length
+      ? Number((accuracies.reduce((a, b) => a + b, 0) / accuracies.length).toFixed(4))
+      : null;
     averageLatencyMs[m] = lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : null;
     successRate[m] = Number(((succ.success / (succ.total || 1)) * 100).toFixed(1));
   });
@@ -554,6 +575,7 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
       results,
       macroAverageWer,
       macroAverageCer,
+      macroAverageAccuracy,
       averageLatencyMs,
       successRate,
       status: isPartial ? 'partial' : 'completed',

@@ -19,9 +19,10 @@ function generateMarkdownReport(): string {
     .map((m) => {
       const wer = run.macroAverageWer[m] != null ? `${(run.macroAverageWer[m]! * 100).toFixed(2)}%` : 'Not configured';
       const cer = run.macroAverageCer[m] != null ? `${(run.macroAverageCer[m]! * 100).toFixed(2)}%` : 'Not configured';
+      const acc = run.macroAverageAccuracy[m] != null ? `${(run.macroAverageAccuracy[m]! * 100).toFixed(2)}%` : 'Not configured';
       const lat = run.averageLatencyMs[m] != null ? `${run.averageLatencyMs[m]} ms` : '—';
       const succ = run.successRate[m] ?? 0;
-      return `| **${m.toUpperCase()}** | ${wer} | ${cer} | ${lat} | ${succ}% |`;
+      return `| **${m.toUpperCase()}** | ${wer} | ${cer} | ${acc} | ${lat} | ${succ}% |`;
     })
     .join('\n');
 
@@ -36,8 +37,8 @@ function generateMarkdownReport(): string {
 
 ## 1. Executive Summary & Macro Averages
 
-| Model | Macro-Avg WER | Macro-Avg CER | Avg Latency (ms) | Success Rate (%) |
-| :--- | :---: | :---: | :---: | :---: |
+| Model | Macro-Avg WER | Macro-Avg CER | Accuracy | Avg Latency (ms) | Success Rate (%) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
 ${rows}
 
 ---
@@ -46,6 +47,7 @@ ${rows}
 - **Evaluation Unit:** Audio utterance / reference transcription pairing from consented, de-identified clinical African speech.
 - **Word Error Rate (WER):** Standard Levenshtein edit distance computed on lowercased, punctuation-normalized tokens: \`WER = (S + D + I) / N\`.
 - **Character Error Rate (CER):** Character-level Levenshtein edit distance normalized by reference character count.
+- **Accuracy:** Word-level accuracy, defined as \`1 - WER\`, clamped to [0, 1].
 - **African Diacritic Protocol:** Analysis accounts for tonal markers in Hausa, Igbo, and Yoruba orthography.
 - **Code-Switching Layer:** Intra-utterance code-switch transitions identified and tagged with transparent \`Model-Inferred\` confidence metrics.
 
@@ -71,6 +73,7 @@ function generateJsonReport(): string {
       languages: run.languages,
       macroAverageWer: run.macroAverageWer,
       macroAverageCer: run.macroAverageCer,
+      macroAverageAccuracy: run.macroAverageAccuracy,
       averageLatencyMs: run.averageLatencyMs,
       successRate: run.successRate,
       resultsSummary: run.results.map((r) => ({
