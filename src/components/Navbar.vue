@@ -13,6 +13,7 @@ import {
   ArrowRightLeft,
   CheckCircle2,
   AlertCircle,
+  ClipboardList,
 } from 'lucide-vue-next';
 import type { NavTab } from './navTabs';
 
@@ -40,6 +41,7 @@ interface NavItem {
 const navItems = computed<NavItem[]>(() => [
   { id: 'home', label: 'Home', icon: Languages },
   { id: 'generator', label: 'Voice Generator', icon: Volume2 },
+  { id: 'intake', label: 'Patient Intake', icon: ClipboardList },
   { id: 'results', label: 'My Results', icon: Library },
   { id: 'benchmark', label: 'Benchmark', icon: Activity },
   { id: 'codeswitch', label: 'Code-Switching', icon: ArrowRightLeft },

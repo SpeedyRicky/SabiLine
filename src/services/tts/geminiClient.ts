@@ -19,3 +19,11 @@ export function getGeminiClient(): GoogleGenAI | null {
   }
   return geminiClient;
 }
+
+// Google's free-tier quota errors surface as a 429 RESOURCE_EXHAUSTED with
+// this text; detecting it lets callers offer a fallback (e.g. device speech)
+// instead of just showing a raw API error.
+export function isQuotaExceededError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes('RESOURCE_EXHAUSTED') || message.includes('429');
+}

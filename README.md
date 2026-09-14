@@ -16,6 +16,13 @@ transparent way to compare how well different speech models actually perform on 
 - **Voice Generator** — turn text into real synthesized speech in 8 languages (English, French, Chinese,
   Hindi, Spanish, Igbo, Hausa, Yoruba), with Hausa/Igbo/Yoruba treated as first-class languages with
   dedicated native voices, plus multi-language batch generation and side-by-side audio comparison.
+- **Patient Voice Intake** — a "press to talk" spoken check-in flow: real mic audio is transcribed by
+  every configured ASR provider (Sahara + the two custom benchmark endpoints, with Gemini as a working
+  fallback), a structured clinical intake record (name, age/DOB, payment type, reason for visit, symptom
+  duration, allergies) is extracted from the transcript, and the system either confirms the record back by
+  voice or asks one spoken follow-up question when confidence is low before finalizing. The finished record
+  is shown as JSON and queued in a local "front desk" list, honestly flagged for manual review whenever
+  confidence stays low even after the follow-up.
 - **Speech Benchmark** — run Word Error Rate / Character Error Rate evaluation across three ASR model
   identities (Sahara, Model B, Model C) on a de-identified clinical audio sample set, with configurable
   text normalization and per-utterance error inspection.
@@ -52,7 +59,10 @@ src/
     benchmark/    WER, CER, BLEU/chrF, normalization, code-switch heuristics, sample dataset
   types/          Shared TypeScript interfaces
   utils/          In-app diagnostics/error logging
-server.ts         Express API (TTS generation, translation, benchmark runner, QA evaluator)
+    asr/          Live ASR provider registry + transcribeWithAllProviders (used by both Benchmark and Intake)
+    audio/        Browser-only mic recording -> WAV encoder (Web Audio API)
+    intake/       Patient intake types (structured fields, confidence threshold)
+server.ts         Express API (TTS generation, translation, benchmark runner, QA evaluator, intake ASR + extraction)
 ```
 
 ## Setup
@@ -108,3 +118,10 @@ statement, including the explicit acknowledgment that this tool does not provide
   benchmark runs until it resets, even if an ASR provider itself has quota to spare.
 - Browser/device speech (`provider: "browser"`) plays once locally via the Web Speech API and cannot be
   saved as an audio file — the UI states this explicitly rather than showing a non-functional player.
+- When Gemini's free-tier voice quota is exhausted, both the Voice Generator and Patient Intake flow
+  automatically fall back to Device Web Speech and say so, rather than dead-ending on a raw API error.
+  Benchmark reference audio is cached per (text, language) in-process to reduce how fast that same quota
+  gets consumed by repeated benchmark runs.
+- Patient Intake currently runs entirely in the browser tab (mic capture via `getUserMedia`). A telephony
+  front end (e.g. Twilio, so a real phone call could drive the same intake pipeline) is a natural extension
+  but is out of scope for the primary deliverable.
