@@ -1,6 +1,7 @@
 import { Modality } from '@google/genai';
 import { getGeminiClient } from './geminiClient';
 import { pcmToWavBuffer } from './pcmToWav';
+import { normalizeQuietAudio } from '../asr/audioPreprocess';
 import type { LanguageCode } from '../../types';
 
 export interface SynthesizeResult {
@@ -49,9 +50,13 @@ export async function synthesizeReferenceAudio(text: string, language: LanguageC
     const wavBuffer = pcmToWavBuffer(pcmRawBuffer, 24000, 1, 16);
     const durationSec = Math.max(1, Math.round((pcmRawBuffer.length / (24000 * 2)) * 10) / 10);
 
+    // Boost quiet renderings before handing this off to any ASR provider —
+    // a quiet clip is more likely to be mistranscribed or hallucinated on.
+    const { buffer: audioBuffer } = normalizeQuietAudio(wavBuffer);
+
     return {
       success: true,
-      audioBase64: wavBuffer.toString('base64'),
+      audioBase64: audioBuffer.toString('base64'),
       mimeType: 'audio/wav',
       durationSec,
     };

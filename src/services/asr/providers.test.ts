@@ -3,7 +3,7 @@ import { geminiAsrProvider } from './geminiAsr';
 import { saharaAsrProvider } from './saharaAsr';
 import { createCustomEndpointProvider } from './customEndpointAsr';
 
-const ENV_KEYS = ['GEMINI_API_KEY', 'SAHARA_API_KEY', 'TEST_MODEL_API_KEY', 'TEST_MODEL_API_URL'] as const;
+const ENV_KEYS = ['GEMINI_API_KEY', 'SAHARA_STT_API_KEY', 'TEST_MODEL_API_KEY', 'TEST_MODEL_API_URL'] as const;
 const savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -41,19 +41,19 @@ describe('geminiAsrProvider', () => {
 });
 
 describe('saharaAsrProvider', () => {
-  it('reports not configured when SAHARA_API_KEY is unset', () => {
+  it('reports not configured when SAHARA_STT_API_KEY is unset', () => {
     expect(saharaAsrProvider.isConfigured()).toBe(false);
   });
 
-  it('reports configured once SAHARA_API_KEY is set', () => {
-    process.env.SAHARA_API_KEY = 'fake-key-for-test';
+  it('reports configured once SAHARA_STT_API_KEY is set', () => {
+    process.env.SAHARA_STT_API_KEY = 'fake-key-for-test';
     expect(saharaAsrProvider.isConfigured()).toBe(true);
   });
 
   it('transcribe() fails honestly without making a network call when unconfigured', async () => {
     const result = await saharaAsrProvider.transcribe('base64audio', 'audio/wav', 'ha');
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/SAHARA_API_KEY/);
+    expect(result.error).toMatch(/SAHARA_STT_API_KEY/);
   });
 });
 
