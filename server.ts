@@ -7,7 +7,7 @@ import { pcmToWavBuffer } from './src/services/tts/pcmToWav';
 import { synthesizeReferenceAudio } from './src/services/tts/geminiSynthesize';
 import { ASR_PROVIDER_REGISTRY, DEFAULT_BENCHMARK_MODELS } from './src/services/asr/registry';
 import { transcribeWithAllProviders, LIVE_ASR_PRIORITY } from './src/services/asr/transcribeLive';
-import { detectLanguageAndTranscribe } from './src/services/asr/detectLanguage';
+import { detectLanguageAndTranscribe, detectLanguageFromText } from './src/services/asr/detectLanguage';
 import { getSabiLineReply } from './src/services/intake/converse';
 import { isTwilioConfigured, placeReminderCall } from './src/services/reminder/twilioReminder';
 import { normalizeQuietAudio } from './src/services/asr/audioPreprocess';
@@ -608,6 +608,8 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
 app.post('/api/intake/converse', async (req: Request, res: Response) => {
   const {
     audioBase64,
+    text,
+    startCall,
     mimeType = 'audio/wav',
     language = 'auto',
     history = [],
@@ -615,8 +617,88 @@ app.post('/api/intake/converse', async (req: Request, res: Response) => {
     selectedModels,
   } = req.body;
 
+  // Tapping SPEAK for the first time connects the call before the patient
+  // has said anything — SabiLine opens with a greeting rather than waiting
+  // to be spoken to first, same as a real receptionist answering a call.
+  // Nothing was heard yet, so there's no language to detect: the opening
+  // greeting is always in English, and real detection runs on the
+  // patient's first actual reply (voice or typed) below.
+  if (startCall === true) {
+    const reply = await getSabiLineReply(Array.isArray(history) ? history : [], null, 'en', 0);
+    if (!reply.success) {
+      return res.status(reply.quotaExceeded ? 429 : 500).json({
+        success: false,
+        quotaExceeded: reply.quotaExceeded,
+        error: reply.error,
+      });
+    }
+    return res.json({
+      success: true,
+      spokenReply: reply.spokenReply,
+      done: reply.done,
+      fields: reply.fields,
+      department: reply.department,
+      appointmentSlot: reply.appointmentSlot,
+      needsManualReview: reply.needsManualReview,
+    });
+  }
+
+  // A patient who types their reply instead of speaking has no audio for
+  // the ASR/gain-normalization pipeline below — just their typed text —
+  // so that path skips straight to language detection (text-only, when
+  // needed) and the same conversational reply call every turn ends with.
+  if (typeof text === 'string' && text.trim()) {
+    const typedText = text.trim();
+    let resolvedLanguage: LanguageCode = language === 'auto' ? 'en' : (language as LanguageCode);
+    let detectedLanguage: LanguageCode | null = null;
+
+    if (language === 'auto') {
+      const detection = await detectLanguageFromText(typedText);
+      if (!detection.success || !detection.languageCode) {
+        return res.json({
+          success: true,
+          detectedLanguage: null,
+          transcript: null,
+          quotaExceeded: detection.quotaExceeded,
+          error: detection.error,
+        });
+      }
+      resolvedLanguage = detection.languageCode;
+      detectedLanguage = detection.languageCode;
+    }
+
+    const reply = await getSabiLineReply(
+      Array.isArray(history) ? history : [],
+      typedText,
+      resolvedLanguage,
+      Number(elapsedMinutes) || 0
+    );
+
+    if (!reply.success) {
+      return res.status(reply.quotaExceeded ? 429 : 500).json({
+        success: false,
+        quotaExceeded: reply.quotaExceeded,
+        error: reply.error,
+      });
+    }
+
+    return res.json({
+      success: true,
+      detectedLanguage,
+      transcript: typedText,
+      primaryProviderId: null,
+      attempts: {},
+      spokenReply: reply.spokenReply,
+      done: reply.done,
+      fields: reply.fields,
+      department: reply.department,
+      appointmentSlot: reply.appointmentSlot,
+      needsManualReview: reply.needsManualReview,
+    });
+  }
+
   if (!audioBase64) {
-    return res.status(400).json({ success: false, error: 'audioBase64 is required.' });
+    return res.status(400).json({ success: false, error: 'audioBase64 or text is required.' });
   }
 
   let processedAudio = audioBase64;

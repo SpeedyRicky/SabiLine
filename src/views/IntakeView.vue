@@ -1,20 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
-import {
-  Mic,
-  Square,
-  Loader2,
-  CheckCircle2,
-  AlertCircle,
-  ClipboardList,
-  RefreshCw,
-  Volume2,
-  ChevronDown,
-  ChevronUp,
-  PhoneCall,
-} from 'lucide-vue-next';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
+import { Mic, ClipboardList, PhoneCall } from 'lucide-vue-next';
 import { LANGUAGES, type LanguageCode } from '../types';
-import { catalogLabel } from '../services/asr/catalog';
 import { blobToWavBase64, pickRecorderMimeType } from '../services/audio/wavEncoder';
 import { speakAloud } from '../services/tts/speakAloud';
 import {
@@ -26,7 +13,8 @@ import {
 } from '../services/intake/types';
 import { logError } from '../utils/diagnostics';
 
-type Phase = 'idle' | 'requesting_mic' | 'recording' | 'thinking' | 'speaking' | 'complete' | 'error';
+type Phase = 'idle' | 'requesting_mic' | 'recording' | 'thinking' | 'speaking' | 'complete';
+type ActiveView = 'speak' | 'visits';
 
 const QUEUE_STORAGE_KEY = 'afrivoice_intake_queue';
 const LANGUAGE_LABEL: Partial<Record<LanguageCode, string>> = Object.fromEntries(
@@ -43,24 +31,26 @@ const EMPTY_FIELDS: IntakeFields = {
   allergies: null,
 };
 
+const OPENING_CAPTION = 'Press SPEAK — SabiLine will greet you, and you can just talk from there. No script, no language to pick.';
+
+const activeView = ref<ActiveView>('speak');
 const phase = ref<Phase>('idle');
-const detectedLanguage = ref<LanguageCode | null>(null);
+const callStarted = ref(false);
 const callStartedAt = ref<number | null>(null);
-const errorMessage = ref<string | null>(null);
-const showDebugPanel = ref(false);
+const detectedLanguage = ref<LanguageCode | null>(null);
+const noticeHtml = ref<string | null>(null);
+const caption = ref(OPENING_CAPTION);
 
 const turns = ref<IntakeConversationTurn[]>([]);
 const fields = ref<IntakeFields>({ ...EMPTY_FIELDS });
 const department = ref<string | null>(null);
 const appointmentSlot = ref<string | null>(null);
 const needsManualReview = ref(false);
-const primaryAsrProviderId = ref<string | null>(null);
-const asrAttempts = ref<IntakeConverseResponse['attempts']>({});
-const gainNormalizationApplied = ref(false);
-const lastSpeechFallback = ref<string | null>(null);
-
 const finalRecord = ref<IntakeRecord | null>(null);
 const queue = ref<IntakeRecord[]>([]);
+
+const showTypeRow = ref(false);
+const typedInput = ref('');
 
 type ReminderState = 'sending' | 'sent' | 'not_configured' | 'error';
 const reminderStatus = ref<Record<string, { state: ReminderState; message?: string }>>({});
@@ -68,6 +58,17 @@ const reminderStatus = ref<Record<string, { state: ReminderState; message?: stri
 let mediaRecorder: MediaRecorder | null = null;
 let recordedChunks: Blob[] = [];
 let activeStream: MediaStream | null = null;
+
+const waveCanvas = ref<HTMLCanvasElement | null>(null);
+let audioCtx: AudioContext | null = null;
+let analyser: AnalyserNode | null = null;
+let rafId: number | null = null;
+
+// Tuned for a typical laptop/phone mic in a quiet-ish room — not exact
+// science, just enough to tell "patient is talking" from "patient stopped."
+const SPEAKING_THRESHOLD = 14;
+const SILENCE_HOLD_MS = 1200;
+const MAX_RECORDING_MS = 20000;
 
 function loadQueue(): IntakeRecord[] {
   try {
@@ -91,39 +92,138 @@ onMounted(() => {
   queue.value = loadQueue();
 });
 
-const hasStarted = computed(() => turns.value.length > 0);
+onBeforeUnmount(() => {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  activeStream?.getTracks().forEach((t) => t.stop());
+  stopVisualizer();
+});
 
-function resetForNewIntake() {
+const speakBtnLabel = computed(() => {
+  if (phase.value === 'requesting_mic' || phase.value === 'recording') return 'LISTENING';
+  if (phase.value === 'thinking') return '···';
+  if (phase.value === 'speaking') return 'SPEAKING';
+  return 'SPEAK';
+});
+
+const stageStatus = computed(() => {
+  switch (phase.value) {
+    case 'requesting_mic':
+    case 'recording':
+      return 'Listening…';
+    case 'thinking':
+      return 'Thinking…';
+    case 'speaking':
+      return 'SabiLine is speaking…';
+    case 'complete':
+      return 'Visit complete';
+    default:
+      return callStarted.value ? 'Tap to reply' : 'Tap to connect the call';
+  }
+});
+
+const speakBtnStateClass = computed(() => {
+  if (phase.value === 'requesting_mic' || phase.value === 'recording') return 'listening';
+  if (phase.value === 'thinking') return 'busy';
+  if (phase.value === 'speaking') return 'speaking';
+  return '';
+});
+
+const speakDisabled = computed(() =>
+  ['requesting_mic', 'recording', 'thinking', 'speaking', 'complete'].includes(phase.value)
+);
+
+function resetForNewCall() {
   phase.value = 'idle';
-  detectedLanguage.value = null;
+  callStarted.value = false;
   callStartedAt.value = null;
-  errorMessage.value = null;
+  detectedLanguage.value = null;
+  noticeHtml.value = null;
+  caption.value = OPENING_CAPTION;
   turns.value = [];
   fields.value = { ...EMPTY_FIELDS };
   department.value = null;
   appointmentSlot.value = null;
   needsManualReview.value = false;
-  primaryAsrProviderId.value = null;
-  asrAttempts.value = {};
-  gainNormalizationApplied.value = false;
-  lastSpeechFallback.value = null;
   finalRecord.value = null;
+  showTypeRow.value = false;
+  typedInput.value = '';
+}
+
+/** Shared tail end of every turn — speak the reply, then either wrap up the visit or listen for what's next. */
+async function handleSabiLineReply(data: IntakeConverseResponse) {
+  const spokenReply = data.spokenReply;
+  if (!spokenReply) {
+    phase.value = 'idle';
+    noticeHtml.value = 'SabiLine had nothing to say back — please try again.';
+    return;
+  }
+
+  turns.value = [...turns.value, { role: 'model', text: spokenReply }];
+  if (data.fields) fields.value = { ...EMPTY_FIELDS, ...data.fields };
+  if (data.department !== undefined) department.value = data.department;
+  if (data.appointmentSlot !== undefined) appointmentSlot.value = data.appointmentSlot;
+  caption.value = spokenReply;
+
+  phase.value = 'speaking';
+  const outcome = await speakAloud(spokenReply, detectedLanguage.value ?? 'en');
+  if (outcome.usedProvider === 'browser' && outcome.fallbackReason) {
+    noticeHtml.value = 'Gemini voice quota reached — spoke via device voice instead.';
+  }
+
+  if (data.done) {
+    finalizeVisit(Boolean(data.needsManualReview));
+  } else {
+    phase.value = 'idle';
+    await startRecording();
+  }
+}
+
+async function startCall() {
+  callStarted.value = true;
+  callStartedAt.value = Date.now();
+  phase.value = 'thinking';
+  noticeHtml.value = null;
+
+  try {
+    const res = await fetch('/api/intake/converse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ startCall: true, history: [], elapsedMinutes: 0 }),
+    });
+    const data: IntakeConverseResponse = await res.json();
+
+    if (!res.ok || !data.success) {
+      if (data.error) logError('intake:startCall', data.error);
+      phase.value = 'idle';
+      callStarted.value = false;
+      noticeHtml.value = data.quotaExceeded
+        ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't start the call. Please try again later."
+        : 'Something went wrong connecting the call. Please try again.';
+      return;
+    }
+
+    await handleSabiLineReply(data);
+  } catch (err) {
+    logError('intake:startCall', err);
+    phase.value = 'idle';
+    callStarted.value = false;
+    noticeHtml.value = 'Something went wrong connecting the call. Please try again.';
+  }
 }
 
 async function startRecording() {
-  errorMessage.value = null;
+  noticeHtml.value = null;
   phase.value = 'requesting_mic';
-  if (callStartedAt.value === null) callStartedAt.value = Date.now();
 
   try {
     activeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
     logError('intake:getUserMedia', err);
-    phase.value = 'error';
-    errorMessage.value =
+    phase.value = 'idle';
+    noticeHtml.value =
       err instanceof Error && err.name === 'NotAllowedError'
-        ? 'Microphone access was denied. Please allow microphone access in your browser to use voice intake.'
-        : 'Could not access your microphone. Please check your device settings and try again.';
+        ? 'Microphone access was denied. Please allow microphone access in your browser, or use &ldquo;Prefer to type instead&rdquo; below to continue by keyboard.'
+        : 'Could not access your microphone. Please check your device settings, or use &ldquo;Prefer to type instead&rdquo; below.';
     return;
   }
 
@@ -136,6 +236,7 @@ async function startRecording() {
   };
 
   mediaRecorder.onstop = () => {
+    stopVisualizer();
     activeStream?.getTracks().forEach((track) => track.stop());
     activeStream = null;
     void handleRecordingStopped();
@@ -143,6 +244,7 @@ async function startRecording() {
 
   mediaRecorder.start();
   phase.value = 'recording';
+  startVisualizerAndSilenceDetection(activeStream);
 }
 
 function stopRecording() {
@@ -151,21 +253,194 @@ function stopRecording() {
   }
 }
 
+// Draws the wave ring around the SPEAK button from the mic's real audio
+// level, and doubles as silence detection: once the patient has clearly
+// spoken and then gone quiet for a bit, the recording stops on its own —
+// no second tap needed, matching a real phone call rather than a
+// press-to-talk radio.
+function startVisualizerAndSilenceDetection(stream: MediaStream) {
+  try {
+    audioCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+    const source = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+  } catch (err) {
+    logError('intake:audioContext', err);
+    window.setTimeout(() => {
+      if (phase.value === 'recording') stopRecording();
+    }, MAX_RECORDING_MS);
+    return;
+  }
+
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  const startedAt = Date.now();
+  let hasSpoken = false;
+  let silenceStartedAt: number | null = null;
+  const canvas = waveCanvas.value;
+  const ctx2d = canvas?.getContext('2d') ?? null;
+
+  function draw() {
+    if (!analyser) return;
+    rafId = requestAnimationFrame(draw);
+    analyser.getByteFrequencyData(data);
+    const avg = data.reduce((a, b) => a + b, 0) / data.length;
+
+    if (ctx2d && canvas) {
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx2d.clearRect(0, 0, w, h);
+      const radius = 68 + (avg / 255) * 22;
+      ctx2d.beginPath();
+      ctx2d.arc(w / 2, h / 2, radius, 0, Math.PI * 2);
+      ctx2d.strokeStyle = '#a4374a';
+      ctx2d.lineWidth = 3;
+      ctx2d.globalAlpha = 0.55;
+      ctx2d.stroke();
+    }
+
+    if (avg > SPEAKING_THRESHOLD) {
+      hasSpoken = true;
+      silenceStartedAt = null;
+    } else if (hasSpoken) {
+      if (silenceStartedAt === null) silenceStartedAt = Date.now();
+      else if (Date.now() - silenceStartedAt > SILENCE_HOLD_MS) {
+        stopRecording();
+        return;
+      }
+    }
+
+    if (Date.now() - startedAt > MAX_RECORDING_MS) stopRecording();
+  }
+  draw();
+}
+
+function stopVisualizer() {
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = null;
+  analyser = null;
+  if (audioCtx) {
+    try {
+      audioCtx.close();
+    } catch {
+      // already closed — nothing to do
+    }
+    audioCtx = null;
+  }
+  const canvas = waveCanvas.value;
+  const ctx2d = canvas?.getContext('2d');
+  if (ctx2d && canvas) ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+}
+
 async function handleRecordingStopped() {
   phase.value = 'thinking';
 
   try {
     const blob = new Blob(recordedChunks, { type: recordedChunks[0]?.type || 'audio/webm' });
     if (blob.size === 0) {
-      throw new Error('No audio was captured. Please try recording again.');
+      throw new Error('No audio was captured. Please try again, or use "Prefer to type instead" below.');
     }
 
     const audioBase64 = await blobToWavBase64(blob);
-    await sendTurn(audioBase64);
+    await sendVoiceTurn(audioBase64);
   } catch (err) {
     logError('intake:processRecording', err);
-    phase.value = 'error';
-    errorMessage.value = err instanceof Error ? err.message : 'Could not process the recording. Please try again.';
+    phase.value = 'idle';
+    noticeHtml.value = err instanceof Error ? err.message : 'Could not process the recording. Please try again.';
+  }
+}
+
+async function sendVoiceTurn(audioBase64: string) {
+  const elapsedMinutes = callStartedAt.value ? Math.round((Date.now() - callStartedAt.value) / 60000) : 0;
+
+  try {
+    const res = await fetch('/api/intake/converse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        audioBase64,
+        mimeType: 'audio/wav',
+        language: detectedLanguage.value ?? 'auto',
+        history: turns.value,
+        elapsedMinutes,
+      }),
+    });
+    const data: IntakeConverseResponse = await res.json();
+
+    if (!res.ok || !data.success) {
+      if (data.error) logError('intake:sendVoiceTurn', data.error);
+      phase.value = 'idle';
+      noticeHtml.value = data.quotaExceeded
+        ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand or respond at the moment. Please try again later."
+        : 'Something went wrong. Please try again.';
+      return;
+    }
+
+    if (data.detectedLanguage) detectedLanguage.value = data.detectedLanguage;
+
+    if (!data.transcript) {
+      phase.value = 'idle';
+      noticeHtml.value = data.quotaExceeded
+        ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand speech at the moment. Please try again later."
+        : 'Didn&rsquo;t catch that. Try again, or use &ldquo;Prefer to type instead&rdquo; below.';
+      return;
+    }
+
+    turns.value = [...turns.value, { role: 'user', text: data.transcript }];
+    await handleSabiLineReply(data);
+  } catch (err) {
+    logError('intake:sendVoiceTurn', err);
+    phase.value = 'idle';
+    noticeHtml.value = 'Something went wrong. Please try again.';
+  }
+}
+
+async function submitTyped() {
+  const val = typedInput.value.trim();
+  if (!val) return;
+  typedInput.value = '';
+
+  // Nothing to reply to yet if the call hasn't started — treat it the same
+  // as tapping SPEAK: connect the call first.
+  if (!callStarted.value) {
+    await startCall();
+    return;
+  }
+
+  const historyBeforeThisTurn = turns.value;
+  turns.value = [...turns.value, { role: 'user', text: val }];
+  phase.value = 'thinking';
+  noticeHtml.value = null;
+  const elapsedMinutes = callStartedAt.value ? Math.round((Date.now() - callStartedAt.value) / 60000) : 0;
+
+  try {
+    const res = await fetch('/api/intake/converse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: val,
+        language: detectedLanguage.value ?? 'auto',
+        history: historyBeforeThisTurn,
+        elapsedMinutes,
+      }),
+    });
+    const data: IntakeConverseResponse = await res.json();
+
+    if (!res.ok || !data.success) {
+      if (data.error) logError('intake:submitTyped', data.error);
+      phase.value = 'idle';
+      noticeHtml.value = data.quotaExceeded
+        ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand or respond at the moment. Please try again later."
+        : 'Something went wrong. Please try again.';
+      return;
+    }
+
+    if (data.detectedLanguage) detectedLanguage.value = data.detectedLanguage;
+    await handleSabiLineReply(data);
+  } catch (err) {
+    logError('intake:submitTyped', err);
+    phase.value = 'idle';
+    noticeHtml.value = 'Something went wrong. Please try again.';
   }
 }
 
@@ -173,70 +448,7 @@ function generateReferenceNumber(): string {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
 
-async function sendTurn(audioBase64: string) {
-  const elapsedMinutes = callStartedAt.value ? Math.round((Date.now() - callStartedAt.value) / 60000) : 0;
-
-  const res = await fetch('/api/intake/converse', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      audioBase64,
-      mimeType: 'audio/wav',
-      language: detectedLanguage.value ?? 'auto',
-      history: turns.value,
-      elapsedMinutes,
-    }),
-  });
-  const data: IntakeConverseResponse = await res.json();
-
-  if (!res.ok || !data.success) {
-    phase.value = 'error';
-    errorMessage.value = data.quotaExceeded
-      ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand or respond at the moment. Please try again later, or enable billing on the Gemini API key."
-      : data.error || 'Something went wrong. Please try again.';
-    return;
-  }
-
-  if (data.detectedLanguage) detectedLanguage.value = data.detectedLanguage;
-  asrAttempts.value = data.attempts ?? {};
-  primaryAsrProviderId.value = data.primaryProviderId ?? null;
-  gainNormalizationApplied.value = Boolean(data.gainNormalizationApplied);
-
-  if (!data.transcript) {
-    phase.value = 'error';
-    errorMessage.value = data.quotaExceeded
-      ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand speech at the moment. Please try again later, or enable billing on the Gemini API key."
-      : "Sorry, none of the configured speech models could make out what was said. Please try again, closer to the microphone.";
-    return;
-  }
-
-  turns.value = [...turns.value, { role: 'user', text: data.transcript }];
-
-  if (!data.spokenReply) {
-    phase.value = 'error';
-    errorMessage.value = 'SabiLine had nothing to say back — please try again.';
-    return;
-  }
-
-  turns.value = [...turns.value, { role: 'model', text: data.spokenReply }];
-  if (data.fields) fields.value = { ...EMPTY_FIELDS, ...data.fields };
-  if (data.department !== undefined) department.value = data.department;
-  if (data.appointmentSlot !== undefined) appointmentSlot.value = data.appointmentSlot;
-
-  phase.value = 'speaking';
-  const outcome = await speakAloud(data.spokenReply, detectedLanguage.value ?? 'en');
-  lastSpeechFallback.value = outcome.usedProvider === 'browser' ? outcome.fallbackReason ?? null : null;
-
-  if (data.done) {
-    finalizeIntake(Boolean(data.needsManualReview));
-  } else {
-    // The mic re-activates automatically for the patient's next reply — no
-    // extra tap required, so the conversation reads as one continuous call.
-    await startRecording();
-  }
-}
-
-function finalizeIntake(reviewNeeded: boolean) {
+function finalizeVisit(reviewNeeded: boolean) {
   needsManualReview.value = reviewNeeded;
 
   const record: IntakeRecord = {
@@ -249,7 +461,7 @@ function finalizeIntake(reviewNeeded: boolean) {
     department: department.value,
     appointmentSlot: appointmentSlot.value,
     needsManualReview: reviewNeeded,
-    primaryAsrProviderId: primaryAsrProviderId.value,
+    primaryAsrProviderId: null,
     status: 'queued_for_review',
   };
 
@@ -257,13 +469,6 @@ function finalizeIntake(reviewNeeded: boolean) {
   queue.value = [record, ...queue.value];
   saveQueue();
   phase.value = 'complete';
-}
-
-function clearQueue() {
-  if (window.confirm('Clear all queued front-desk intake records?')) {
-    queue.value = [];
-    saveQueue();
-  }
 }
 
 async function sendReminderCall(record: IntakeRecord) {
@@ -295,246 +500,654 @@ async function sendReminderCall(record: IntakeRecord) {
     reminderStatus.value = { ...reminderStatus.value, [record.id]: { state: 'error', message: 'Could not reach the reminder-call service.' } };
   }
 }
+
+async function handleSpeakClick() {
+  if (speakDisabled.value) return;
+  if (!callStarted.value) {
+    await startCall();
+    return;
+  }
+  await startRecording();
+}
 </script>
 
 <template>
-  <div class="max-w-3xl mx-auto space-y-6">
-    <h1 class="text-xl font-bold text-[#26200f] flex items-center justify-center sm:justify-start gap-2">
-      <ClipboardList class="w-5 h-5 text-[#96721a]" />
-      SabiLine Patient Intake
-    </h1>
-
-    <div class="bg-white border border-[#e7ddc2] rounded-xl p-5 space-y-4">
-      <div v-if="detectedLanguage" class="flex items-center justify-center">
-        <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-[#f6ecd2] border border-[#96721a]/30 text-[#7a5c14]">
-          Detected language: {{ LANGUAGE_LABEL[detectedLanguage] || detectedLanguage }}
-        </span>
-      </div>
-
-      <!-- Mic control -->
-      <div class="flex flex-col items-center justify-center py-6 gap-3">
-        <button
-          v-if="phase === 'idle' || phase === 'error'"
-          id="intake-mic-button"
-          class="intake-speak-btn w-32 h-32 rounded-full bg-[#96721a] hover:bg-[#7a5c14] text-white flex flex-col items-center justify-center gap-1.5 shadow-lg transition-colors"
-          @click="startRecording"
-        >
-          <Mic class="w-8 h-8" />
-          <span class="text-sm font-semibold tracking-wide">SPEAK</span>
-        </button>
-
-        <button
-          v-else-if="phase === 'recording'"
-          id="intake-stop-button"
-          class="w-32 h-32 rounded-full bg-rose-600 hover:bg-rose-700 text-white flex flex-col items-center justify-center gap-1.5 shadow-lg animate-pulse"
-          @click="stopRecording"
-        >
-          <Square class="w-7 h-7" />
-          <span class="text-sm font-semibold tracking-wide">LISTENING</span>
-        </button>
-
-        <div v-else class="w-32 h-32 rounded-full bg-[#f5eeda] text-[#a89a76] flex items-center justify-center">
-          <Loader2 class="w-9 h-9 animate-spin" />
+  <div class="sabiline-intake">
+    <div class="app">
+      <header class="top">
+        <div class="brand">
+          <span class="word">SabiLine</span>
+          <span class="tag">Voice Intake</span>
         </div>
+        <nav class="tabs" role="tablist" aria-label="Views">
+          <button role="tab" :aria-selected="activeView === 'speak'" @click="activeView = 'speak'">Speak</button>
+          <button role="tab" :aria-selected="activeView === 'visits'" @click="activeView = 'visits'">My Visits</button>
+        </nav>
+      </header>
 
-        <p class="text-sm text-[#4a4128] font-medium">
-          <template v-if="phase === 'idle'">{{ hasStarted ? 'Tap to reply' : 'Tap to speak' }}</template>
-          <template v-else-if="phase === 'requesting_mic'">Requesting microphone access…</template>
-          <template v-else-if="phase === 'recording'">Listening…</template>
-          <template v-else-if="phase === 'thinking'">
-            {{ primaryAsrProviderId ? `Understanding via ${catalogLabel(primaryAsrProviderId)}…` : 'Understanding…' }}
-          </template>
-          <template v-else-if="phase === 'speaking'">
-            <Volume2 class="w-4 h-4 inline -mt-0.5" /> SabiLine is speaking…
-          </template>
-          <template v-else-if="phase === 'error'">Ready to try again</template>
-        </p>
-        <p v-if="phase === 'recording'" class="text-xs text-[#a89a76]">Tap the button again to stop</p>
-
-        <p v-if="lastSpeechFallback" class="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-          Gemini voice quota reached — spoke via device voice instead.
-        </p>
-      </div>
-
-      <div v-if="errorMessage" class="flex items-start gap-2 p-3 rounded-lg bg-rose-50 border border-rose-200 text-sm text-rose-800">
-        <AlertCircle class="w-4 h-4 mt-0.5 shrink-0" />
-        <span>{{ errorMessage }}</span>
-      </div>
-    </div>
-
-    <!-- Conversation transcript -->
-    <div v-if="hasStarted" class="bg-white border border-[#e7ddc2] rounded-xl p-5">
-      <h2 class="text-xs font-semibold text-[#a89a76] uppercase tracking-wide mb-3">Conversation</h2>
-      <div class="flex flex-col gap-2.5 max-h-80 overflow-y-auto pr-1">
-        <div
-          v-for="(turn, idx) in turns"
-          :key="idx"
-          class="max-w-[85%] px-3.5 py-2 rounded-2xl text-sm leading-snug"
-          :class="turn.role === 'model'
-            ? 'self-start bg-[#f6ecd2] text-[#7a5c14] rounded-bl-sm'
-            : 'self-end bg-[#f5eeda] text-[#4a4128] rounded-br-sm'"
-        >
-          <span class="block text-[10px] uppercase tracking-wide opacity-60 mb-0.5">
-            {{ turn.role === 'model' ? 'SabiLine' : 'You' }}
-          </span>
-          {{ turn.text }}
-        </div>
-      </div>
-    </div>
-
-    <!-- Live structured record -->
-    <div v-if="hasStarted" class="bg-white border border-[#e7ddc2] rounded-xl p-5 space-y-4">
-      <div class="flex items-center justify-between">
-        <h2 class="text-sm font-semibold text-[#4a4128]">
-          {{ phase === 'complete' ? 'Intake submitted' : 'Extracted so far' }}
-        </h2>
-      </div>
-
-      <div v-if="phase === 'complete'" class="text-center py-2">
-        <div class="text-[#b8860b] text-2xl font-bold flex items-center justify-center gap-2">
-          <CheckCircle2 class="w-6 h-6" /> Reference #{{ finalRecord?.referenceNumber }}
-        </div>
-        <p class="text-xs text-[#a89a76] mt-1">
-          {{ finalRecord?.needsManualReview ? 'Flagged for front desk review — some details need confirming.' : 'Queued for front desk review.' }}
-        </p>
-        <p v-if="finalRecord?.department || finalRecord?.appointmentSlot" class="text-sm text-emerald-800 mt-2 font-medium">
-          {{ finalRecord?.department || 'Department not yet assigned' }}
-          <span v-if="finalRecord?.appointmentSlot"> — {{ finalRecord.appointmentSlot }}</span>
-        </p>
-      </div>
-
-      <dl class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-        <div v-for="(label, key, idx) in INTAKE_FIELD_LABELS" :key="key" class="intake-field-reveal" :style="{ animationDelay: `${idx * 90}ms` }">
-          <dt class="text-xs text-[#a89a76]">{{ label }}</dt>
-          <dd class="font-medium" :class="fields[key] ? 'text-[#26200f]' : 'text-[#c7bc9e] italic'">
-            {{ fields[key] || 'Not captured' }}
-          </dd>
-        </div>
-      </dl>
-
-      <div v-if="phase === 'complete'" class="pt-2 text-center">
-        <button
-          class="text-sm font-medium text-[#96721a] hover:text-[#7a5c14] flex items-center gap-1.5 mx-auto"
-          @click="resetForNewIntake"
-        >
-          <RefreshCw class="w-4 h-4" /> Run another intake
-        </button>
-      </div>
-
-      <details v-if="phase === 'complete'" class="text-xs text-[#a89a76]">
-        <summary class="cursor-pointer select-none">View raw JSON record</summary>
-        <pre class="mt-2 p-3 bg-[#faf9f6] rounded-lg overflow-x-auto">{{ JSON.stringify(finalRecord, null, 2) }}</pre>
-      </details>
-    </div>
-
-    <!-- Judge debug panel: raw per-model outputs, hidden by default -->
-    <div v-if="Object.keys(asrAttempts ?? {}).length > 0" class="bg-white border border-[#e7ddc2] rounded-xl p-4">
-      <button
-        class="w-full flex items-center justify-between text-sm font-semibold text-[#4a4128]"
-        @click="showDebugPanel = !showDebugPanel"
-      >
-        <span>Judge debug: model outputs for this turn</span>
-        <ChevronDown v-if="!showDebugPanel" class="w-4 h-4" />
-        <ChevronUp v-else class="w-4 h-4" />
-      </button>
-
-      <div v-if="showDebugPanel" class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
-        <div
-          v-for="(attempt, id) in asrAttempts"
-          :key="id"
-          class="p-2 rounded-lg border text-xs"
-          :class="attempt.success
-            ? 'bg-[#f6ecd2] border-[#96721a]/30 text-[#7a5c14]'
-            : attempt.notConfigured
-            ? 'bg-[#faf9f6] border-[#e7ddc2] text-[#a89a76]'
-            : 'bg-rose-50 border-rose-200 text-rose-700'"
-        >
-          <div class="font-medium">{{ catalogLabel(String(id)) }}</div>
-          <div class="mt-0.5">
-            {{ attempt.success ? `"${attempt.transcript}"` : attempt.notConfigured ? 'Not configured' : `Failed: ${attempt.error}` }}
-          </div>
-          <div v-if="id === primaryAsrProviderId" class="mt-0.5 font-semibold">Used for this turn</div>
-        </div>
-      </div>
-      <p v-if="showDebugPanel && gainNormalizationApplied" class="text-[11px] text-[#a89a76] mt-2">
-        Audio was quiet, so it was boosted before transcription.
-      </p>
-    </div>
-
-    <!-- Front desk queue -->
-    <div v-if="queue.length > 0" class="bg-white border border-[#e7ddc2] rounded-xl p-5">
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="text-sm font-semibold text-[#4a4128]">Front desk queue ({{ queue.length }})</h2>
-        <button class="text-xs text-[#a89a76] hover:text-rose-600" @click="clearQueue">Clear</button>
-      </div>
-      <ul class="divide-y divide-[#f0e9d6]">
-        <li v-for="record in queue" :key="record.id" class="py-2.5 flex flex-col gap-1.5 text-sm">
-          <div class="flex items-center justify-between gap-2">
-            <div>
-              <span class="font-mono text-xs text-[#c7bc9e]">#{{ record.referenceNumber }}</span>
-              <span class="font-medium text-[#26200f] ml-2">{{ record.fields.name || 'Unnamed patient' }}</span>
-              <span class="text-[#a89a76]"> — {{ record.fields.reasonForVisit || 'reason not captured' }}</span>
-              <span v-if="record.appointmentSlot" class="text-[#7a5c14]"> · {{ record.department }} {{ record.appointmentSlot }}</span>
-            </div>
-            <span
-              v-if="record.needsManualReview"
-              class="text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 shrink-0"
-            >
-              Needs review
-            </span>
-          </div>
-
-          <div v-if="record.fields.phoneNumber" class="flex items-center gap-2">
-            <button
-              class="text-xs font-medium text-[#96721a] hover:text-[#7a5c14] flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
-              :disabled="reminderStatus[record.id]?.state === 'sending'"
-              @click="sendReminderCall(record)"
-            >
-              <PhoneCall class="w-3.5 h-3.5" />
-              {{ reminderStatus[record.id]?.state === 'sending' ? 'Calling…' : 'Send reminder call' }}
+      <!-- SPEAK VIEW -->
+      <section class="view" :class="{ active: activeView === 'speak' }">
+        <div class="speak-stage">
+          <div class="speak-btn-wrap">
+            <canvas ref="waveCanvas" width="176" height="176"></canvas>
+            <button class="speak-btn" :class="speakBtnStateClass" :disabled="speakDisabled" @click="handleSpeakClick">
+              <Mic class="icon" />
+              <span>{{ speakBtnLabel }}</span>
             </button>
-            <span v-if="reminderStatus[record.id]?.state === 'sent'" class="text-xs text-[#7a5c14]">Call placed</span>
-            <span v-if="reminderStatus[record.id]?.state === 'not_configured'" class="text-xs text-amber-700">
-              Twilio isn't configured on this deployment
-            </span>
-            <span v-if="reminderStatus[record.id]?.state === 'error'" class="text-xs text-rose-700">
-              {{ reminderStatus[record.id]?.message || 'Call failed' }}
-            </span>
           </div>
-        </li>
-      </ul>
+          <div class="stage-status">{{ stageStatus }}</div>
+          <p class="caption">{{ caption }}</p>
+          <span v-if="detectedLanguage" class="pill" aria-pressed="true">
+            Detected language: {{ LANGUAGE_LABEL[detectedLanguage] || detectedLanguage }}
+          </span>
+
+          <div class="type-row" :class="{ active: showTypeRow }">
+            <input
+              v-model="typedInput"
+              type="text"
+              placeholder="Type your reply instead…"
+              aria-label="Type your reply"
+              @keydown.enter="submitTyped"
+            />
+            <button class="btn" @click="submitTyped">Send</button>
+          </div>
+          <button class="type-toggle" @click="showTypeRow = !showTypeRow">Prefer to type instead of talk?</button>
+
+          <div v-if="noticeHtml" class="notice" v-html="noticeHtml"></div>
+        </div>
+
+        <div class="speak-stage transcript-stage">
+          <div class="transcript">
+            <p v-if="turns.length === 0" class="transcript-empty">Your conversation will appear here as you talk.</p>
+            <div v-for="(turn, idx) in turns" :key="idx" class="bubble" :class="turn.role === 'model' ? 'bot' : 'patient'">
+              <span class="who">{{ turn.role === 'model' ? 'SabiLine' : 'You' }}</span>{{ turn.text }}
+            </div>
+          </div>
+        </div>
+
+        <button v-if="phase === 'complete'" class="btn ghost reset-btn" @click="resetForNewCall">Start a new call</button>
+      </section>
+
+      <!-- VISITS VIEW -->
+      <section class="view" :class="{ active: activeView === 'visits' }">
+        <div v-if="queue.length === 0" class="empty-state">
+          <ClipboardList class="icon" />
+          <div>No visits yet.</div>
+          <div class="sub">Start a call with SabiLine to see your intake summary here.</div>
+        </div>
+
+        <div v-else class="visits-list">
+          <div v-for="record in queue" :key="record.id" class="visit-card">
+            <div class="visit-head">
+              <div>
+                <div class="name">{{ record.fields.name || 'Unnamed patient' }}</div>
+                <div class="when">
+                  {{ new Date(record.createdAt).toLocaleString() }} · {{ LANGUAGE_LABEL[record.language] || record.language }}
+                </div>
+              </div>
+              <span class="ref-chip">#{{ record.referenceNumber }}</span>
+            </div>
+
+            <dl class="fact-grid">
+              <div v-for="(label, key) in INTAKE_FIELD_LABELS" :key="key" class="fact">
+                <dt>{{ label }}</dt>
+                <dd>{{ record.fields[key] || 'Not captured' }}</dd>
+              </div>
+            </dl>
+
+            <div v-if="record.needsManualReview" class="review-flag">Flagged for front desk review</div>
+
+            <div v-if="record.department || record.appointmentSlot" class="appt-strip">
+              <span class="dept">{{ record.department || 'Department not yet assigned' }}</span>
+              <span v-if="record.appointmentSlot" class="time">{{ record.appointmentSlot }}</span>
+            </div>
+
+            <div v-if="record.fields.phoneNumber" class="reminder-row">
+              <button
+                class="type-toggle"
+                :disabled="reminderStatus[record.id]?.state === 'sending'"
+                @click="sendReminderCall(record)"
+              >
+                <PhoneCall class="icon-inline" />
+                {{ reminderStatus[record.id]?.state === 'sending' ? 'Calling…' : 'Send reminder call' }}
+              </button>
+              <span v-if="reminderStatus[record.id]?.state === 'sent'" class="reminder-note ok">Call placed</span>
+              <span v-if="reminderStatus[record.id]?.state === 'not_configured'" class="reminder-note">
+                Twilio isn&rsquo;t configured on this deployment
+              </span>
+              <span v-if="reminderStatus[record.id]?.state === 'error'" class="reminder-note error">
+                {{ reminderStatus[record.id]?.message || 'Call failed' }}
+              </span>
+            </div>
+
+            <details class="transcript-toggle">
+              <summary>View conversation transcript</summary>
+              <div class="transcript">
+                <div v-for="(turn, idx) in record.conversation" :key="idx" class="bubble" :class="turn.role === 'model' ? 'bot' : 'patient'">
+                  <span class="who">{{ turn.role === 'model' ? 'SabiLine' : 'You' }}</span>{{ turn.text }}
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
 </template>
 
 <style scoped>
-.intake-field-reveal {
-  animation: intake-field-fade-in 260ms ease-out both;
+.sabiline-intake {
+  --ground: #fbfaf7;
+  --surface: #ffffff;
+  --surface-2: #f5eeda;
+  --ink: #26200f;
+  --ink-muted: #6e6248;
+  --ink-faint: #a89a76;
+  --accent: #96721a;
+  --accent-strong: #7a5c14;
+  --accent-soft: #f6ecd2;
+  --on-accent: #ffffff;
+  --gold: #b8860b;
+  --gold-soft: #fbf1d9;
+  --border: #e7ddc2;
+  --danger: #a4374a;
+  --shadow: 0 1px 2px rgba(33, 28, 46, 0.06), 0 8px 24px -12px rgba(33, 28, 46, 0.18);
+  --radius-lg: 28px;
+  --radius-md: 16px;
+  --radius-sm: 10px;
+  --font-display: 'Fraunces', 'Iowan Old Style', ui-serif, Georgia, serif;
+  --font-body: 'Work Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-body);
 }
 
-@keyframes intake-field-fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
+@media (prefers-color-scheme: dark) {
+  .sabiline-intake {
+    --ground: #1c170d;
+    --surface: #241d10;
+    --surface-2: #2e2513;
+    --ink: #f7f0dc;
+    --ink-muted: #c2b28c;
+    --ink-faint: #8a7d5f;
+    --accent: #d9b354;
+    --accent-strong: #eecb74;
+    --accent-soft: #3a2f16;
+    --on-accent: #241d10;
+    --gold: #e0b15c;
+    --gold-soft: #3a2e1a;
+    --border: #3d3319;
+    --danger: #e08a97;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 28px -14px rgba(0, 0, 0, 0.6);
   }
-  to {
-    opacity: 1;
-    transform: translateY(0);
+}
+
+.sabiline-intake * {
+  box-sizing: border-box;
+}
+.sabiline-intake h1,
+.sabiline-intake h2,
+.sabiline-intake h3 {
+  font-family: var(--font-display);
+  margin: 0;
+}
+.sabiline-intake button {
+  font-family: inherit;
+}
+
+.app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding-block: 12px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+header.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-block: 6px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.brand .word {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.15rem;
+  letter-spacing: 0.01em;
+}
+.brand .tag {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--ink-muted);
+}
+
+nav.tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px;
+}
+nav.tabs button {
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+nav.tabs button[aria-selected='true'] {
+  background: var(--accent);
+  color: white;
+}
+
+.pill {
+  display: inline-block;
+  border: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+section.view {
+  display: none;
+  flex-direction: column;
+  gap: 18px;
+}
+section.view.active {
+  display: flex;
+}
+
+.speak-stage {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 32px 24px 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+}
+.transcript-stage {
+  padding-top: 18px;
+  padding-bottom: 14px;
+}
+
+.speak-btn-wrap {
+  position: relative;
+  width: 176px;
+  height: 176px;
+  display: grid;
+  place-items: center;
+}
+.speak-btn-wrap canvas {
+  position: absolute;
+  inset: 0;
+  width: 176px;
+  height: 176px;
+  pointer-events: none;
+}
+.speak-btn {
+  position: relative;
+  z-index: 2;
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  background: var(--accent);
+  color: var(--on-accent);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.02rem;
+  letter-spacing: 0.03em;
+  box-shadow: 0 10px 30px -10px rgba(150, 114, 26, 0.7);
+  transition: transform 0.15s ease, background 0.2s ease, box-shadow 0.2s ease;
+  animation: sabiline-breathe 3.2s ease-in-out infinite;
+}
+.speak-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+.speak-btn .icon {
+  width: 30px;
+  height: 30px;
+}
+.speak-btn.listening {
+  background: var(--danger);
+  animation: none;
+}
+.speak-btn.busy {
+  background: var(--ink-muted);
+  animation: none;
+  cursor: progress;
+}
+.speak-btn.speaking {
+  background: var(--gold);
+  animation: none;
+}
+.speak-btn:disabled {
+  cursor: not-allowed;
+}
+@keyframes sabiline-breathe {
+  0%,
+  100% {
+    box-shadow: 0 10px 30px -10px rgba(150, 114, 26, 0.7);
+  }
+  50% {
+    box-shadow: 0 14px 38px -8px rgba(150, 114, 26, 0.85);
   }
 }
-
-.intake-speak-btn {
-  animation: intake-speak-breathe 3.2s ease-in-out infinite;
-}
-
-@keyframes intake-speak-breathe {
-  0%, 100% { box-shadow: 0 10px 30px -10px rgba(150, 114, 26, 0.55); }
-  50% { box-shadow: 0 14px 38px -8px rgba(150, 114, 26, 0.75); }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .intake-speak-btn {
+  .speak-btn {
     animation: none;
+  }
+}
+
+.stage-status {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+.caption {
+  font-size: 1.05rem;
+  line-height: 1.5;
+  max-width: 46ch;
+  min-height: 1.6em;
+}
+.type-toggle {
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.type-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.type-row {
+  display: none;
+  gap: 8px;
+  width: 100%;
+  max-width: 420px;
+}
+.type-row.active {
+  display: flex;
+}
+.type-row input {
+  flex: 1;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--ground);
+  color: var(--ink);
+  font-size: 0.92rem;
+}
+.btn {
+  border: none;
+  border-radius: 999px;
+  padding: 10px 18px;
+  font-weight: 600;
+  font-size: 0.88rem;
+  cursor: pointer;
+  background: var(--accent);
+  color: var(--on-accent);
+  transition: background 0.15s ease;
+}
+.btn:hover {
+  background: var(--accent-strong);
+}
+.btn.ghost {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+.btn.ghost:hover {
+  background: var(--accent-soft);
+}
+.reset-btn {
+  align-self: center;
+}
+
+.notice {
+  font-size: 0.8rem;
+  color: var(--ink-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  text-align: left;
+}
+
+.transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 2px;
+  width: 100%;
+}
+.bubble {
+  max-width: 82%;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+.bubble .who {
+  display: block;
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  margin-bottom: 3px;
+  opacity: 0.7;
+}
+.bubble.bot {
+  align-self: flex-start;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border-bottom-left-radius: 4px;
+}
+.bubble.patient {
+  align-self: flex-end;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-bottom-right-radius: 4px;
+}
+.transcript-empty {
+  color: var(--ink-faint);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 18px 0;
+  width: 100%;
+  margin: 0;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 48px 20px;
+  color: var(--ink-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+.empty-state .icon {
+  width: 40px;
+  height: 40px;
+  color: var(--ink-faint);
+}
+.empty-state .sub {
+  font-size: 0.82rem;
+}
+
+.visits-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.visit-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.visit-head {
+  padding: 16px 18px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+.visit-head .name {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.visit-head .when {
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+}
+.ref-chip {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  background: var(--gold-soft);
+  color: var(--gold);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.fact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  padding: 0 18px 16px;
+  margin: 0;
+}
+.fact dt {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  margin-bottom: 2px;
+}
+.fact dd {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 500;
+}
+
+.review-flag {
+  margin: 0 18px 12px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.appt-strip {
+  margin: 0 18px 16px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--gold-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.appt-strip .dept {
+  font-weight: 600;
+  color: var(--ink);
+}
+.appt-strip .time {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--gold);
+  font-weight: 600;
+}
+
+.reminder-row {
+  margin: 0 18px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.icon-inline {
+  width: 14px;
+  height: 14px;
+  display: inline;
+  vertical-align: -2px;
+  margin-right: 2px;
+}
+.reminder-note {
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+}
+.reminder-note.ok {
+  color: var(--accent-strong);
+}
+.reminder-note.error {
+  color: var(--danger);
+}
+
+details.transcript-toggle {
+  border-top: 1px solid var(--border);
+  padding: 10px 18px 16px;
+}
+details.transcript-toggle summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+details.transcript-toggle .transcript {
+  margin-top: 10px;
+  max-height: 240px;
+}
+
+@media (max-width: 480px) {
+  .speak-stage {
+    padding: 26px 16px 22px;
+  }
+  .bubble {
+    max-width: 90%;
   }
 }
 </style>

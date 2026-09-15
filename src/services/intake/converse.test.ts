@@ -136,4 +136,24 @@ describe('getSabiLineReply with a configured key', () => {
     expect(result.success).toBe(false);
     expect(result.quotaExceeded).toBe(true);
   });
+
+  it('opens with a greeting when userText is null, without inventing a patient turn', async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      text: JSON.stringify({
+        spokenReply: 'Hello, thanks for calling SabiLine — how can I help you today?',
+        done: false,
+        fields: {},
+        needsManualReview: false,
+      }),
+    });
+
+    const result = await getSabiLineReply([], null, 'en', 0);
+    expect(result.success).toBe(true);
+    expect(result.spokenReply).toMatch(/Hello/);
+
+    const callArgs = mockGenerateContent.mock.calls[0][0];
+    expect(callArgs.contents).toHaveLength(1);
+    expect(callArgs.contents[0].role).toBe('user');
+    expect(callArgs.config.systemInstruction).toMatch(/call has just connected/);
+  });
 });
