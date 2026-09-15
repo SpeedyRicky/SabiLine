@@ -31,6 +31,15 @@ export function isQuotaExceededError(err: unknown): boolean {
   return message.includes('RESOURCE_EXHAUSTED') || message.includes('429');
 }
 
+// A key that is set but rejected by Google ("API key not valid") is, for the
+// patient, the same situation as no key at all: nothing will work until the
+// deployment's GEMINI_API_KEY is corrected. Surfacing it as "not configured"
+// gives a clear, actionable message instead of a raw 500.
+export function isInvalidApiKeyError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes('API_KEY_INVALID') || message.includes('API key not valid');
+}
+
 // A 503 UNAVAILABLE ("model is currently experiencing high demand") is
 // Google's own transient overload signal, observed in practice to clear up
 // within a second or two — distinct from a 429 quota exhaustion, which

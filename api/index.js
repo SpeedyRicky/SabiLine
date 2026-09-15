@@ -26,6 +26,10 @@ function isQuotaExceededError(err) {
   const message = err instanceof Error ? err.message : String(err);
   return message.includes("RESOURCE_EXHAUSTED") || message.includes("429");
 }
+function isInvalidApiKeyError(err) {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("API_KEY_INVALID") || message.includes("API key not valid");
+}
 function isTransientOverloadError(err) {
   const message = err instanceof Error ? err.message : String(err);
   return message.includes("UNAVAILABLE") || message.includes('"code":503') || message.includes(" 503 ");
@@ -568,6 +572,13 @@ async function getSabiLineReply(history, userText, language, elapsedMinutes) {
       needsManualReview: Boolean(parsed.needsManualReview)
     };
   } catch (err) {
+    if (isInvalidApiKeyError(err)) {
+      return {
+        success: false,
+        notConfigured: true,
+        error: "GEMINI_API_KEY is set but Google rejected it as invalid. Check the key in the deployment environment variables (e.g. Vercel > Settings > Environment Variables) and redeploy."
+      };
+    }
     return {
       success: false,
       quotaExceeded: isQuotaExceededError(err),

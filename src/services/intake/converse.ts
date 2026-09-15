@@ -1,6 +1,7 @@
 import {
   getGeminiClient,
   isQuotaExceededError,
+  isInvalidApiKeyError,
   isTimeoutError,
   withGeminiRetry,
   withTimeout,
@@ -173,6 +174,13 @@ export async function getSabiLineReply(
       needsManualReview: Boolean(parsed.needsManualReview),
     };
   } catch (err) {
+    if (isInvalidApiKeyError(err)) {
+      return {
+        success: false,
+        notConfigured: true,
+        error: 'GEMINI_API_KEY is set but Google rejected it as invalid. Check the key in the deployment environment variables (e.g. Vercel > Settings > Environment Variables) and redeploy.',
+      };
+    }
     return {
       success: false,
       quotaExceeded: isQuotaExceededError(err),
