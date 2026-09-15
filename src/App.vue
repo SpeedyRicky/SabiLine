@@ -18,7 +18,14 @@ import type { SavedResultItem, ProviderCapability } from './types';
 import { PROVIDER_CAPABILITIES } from './services/tts/voices';
 import { logError } from './utils/diagnostics';
 
-const activeTab = ref<NavTab>('home');
+// The live site's default experience is just the SabiLine intake demo — no
+// nav chrome, landing straight on Patient Intake, matching the standalone
+// demo this was built from. The rest of the original AfriVoice Studio
+// (Voice Generator, Benchmark, Code-Switching, Methodology/Impact/Ethics)
+// stays in the app for anyone who wants to see it — append ?studio=1 to the
+// URL to get the full studio shell with its nav bar, starting on Home.
+const studioMode = ref(new URLSearchParams(window.location.search).has('studio'));
+const activeTab = ref<NavTab>(studioMode.value ? 'home' : 'intake');
 
 function loadSavedResults(): SavedResultItem[] {
   try {
@@ -103,8 +110,12 @@ function providerStatus() {
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-50 text-slate-800 flex flex-col font-sans">
+  <div
+    class="min-h-screen flex flex-col font-sans"
+    :class="studioMode ? 'bg-slate-50 text-slate-800' : 'bg-[#faf9f6] text-slate-800'"
+  >
     <Navbar
+      v-if="studioMode"
       :active-tab="activeTab"
       :result-count="savedResults.length"
       :provider-status="providerStatus()"
@@ -147,7 +158,7 @@ function providerStatus() {
       </AppErrorBoundary>
     </main>
 
-    <footer class="bg-white border-t border-slate-200 py-8 mt-12 text-slate-600 text-xs">
+    <footer v-if="studioMode" class="bg-white border-t border-slate-200 py-8 mt-12 text-slate-600 text-xs">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-4">
         <div class="flex flex-col md:flex-row items-center justify-between gap-4">
           <div class="flex items-center gap-2.5">
