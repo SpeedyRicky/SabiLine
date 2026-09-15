@@ -10,6 +10,9 @@ import { transcribeWithAllProviders, LIVE_ASR_PRIORITY } from './src/services/as
 import { detectLanguageAndTranscribe, detectLanguageFromText } from './src/services/asr/detectLanguage';
 import { getSabiLineReply } from './src/services/intake/converse';
 import { isTwilioConfigured, placeReminderCall } from './src/services/reminder/twilioReminder';
+import { scheduleAppointmentReminders, rehydratePendingReminders, runDueReminders, listScheduledReminders } from './src/services/reminder/reminderScheduler';
+import { notifyStaffOfVisit, buildEnglishVisitSummary } from './src/services/notify/staffNotify';
+import { randomUUID } from 'crypto';
 import { normalizeQuietAudio } from './src/services/asr/audioPreprocess';
 import { calculateWER } from './src/services/benchmark/wer';
 import { calculateCER } from './src/services/benchmark/cer';
@@ -622,6 +625,37 @@ app.post('/api/benchmark/run', asyncHandler(async (req: Request, res: Response) 
 // The reply is genuinely generated per turn, never a fixed script: SabiLine
 // asks about whatever it doesn't have yet, in whatever order feels natural,
 // and only signals "done" once it has actually gathered what it can.
+// Fires once per intake, the turn Gemini sets "done": true — sends staff the
+// English visit summary and, when a phone number + confirmed appointment
+// timestamp are on file, arms the two automatic Twilio reminder calls (2
+// days and 2 hours before the appointment). Never blocks or fails the
+// caller-facing response: both are best-effort side effects.
+function finalizeIntakeIfDone(
+  visitId: string,
+  language: LanguageCode,
+  reply: Awaited<ReturnType<typeof getSabiLineReply>>
+): void {
+  if (!reply.success || !reply.done || !reply.fields) return;
+
+  const summary = buildEnglishVisitSummary({
+    referenceNumber: visitId,
+    language,
+    fields: reply.fields,
+    department: reply.department ?? null,
+    appointmentSlot: reply.appointmentSlot ?? null,
+    needsManualReview: Boolean(reply.needsManualReview),
+  });
+  void notifyStaffOfVisit(summary);
+
+  scheduleAppointmentReminders({
+    visitId,
+    phoneNumber: reply.fields.phoneNumber ?? null,
+    department: reply.department ?? null,
+    appointmentSlot: reply.appointmentSlot ?? null,
+    appointmentSlotIso: reply.appointmentSlotIso ?? null,
+  });
+}
+
 app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response) => {
   const {
     audioBase64,
@@ -629,10 +663,12 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
     startCall,
     mimeType = 'audio/wav',
     language = 'auto',
+    visitId,
     history = [],
     elapsedMinutes = 0,
     selectedModels,
   } = req.body;
+  const resolvedVisitId: string = typeof visitId === 'string' && visitId ? visitId : randomUUID();
 
   // Tapping SPEAK for the first time connects the call before the patient
   // has said anything — SabiLine opens with a greeting rather than waiting
@@ -651,13 +687,16 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
         error: reply.error,
       });
     }
+    finalizeIntakeIfDone(resolvedVisitId, 'en', reply);
     return res.json({
       success: true,
+      visitId: resolvedVisitId,
       spokenReply: reply.spokenReply,
       done: reply.done,
       fields: reply.fields,
       department: reply.department,
       appointmentSlot: reply.appointmentSlot,
+      appointmentSlotIso: reply.appointmentSlotIso,
       needsManualReview: reply.needsManualReview,
     });
   }
@@ -705,8 +744,10 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
       });
     }
 
+    finalizeIntakeIfDone(resolvedVisitId, resolvedLanguage, reply);
     return res.json({
       success: true,
+      visitId: resolvedVisitId,
       detectedLanguage,
       transcript: typedText,
       primaryProviderId: null,
@@ -716,6 +757,7 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
       fields: reply.fields,
       department: reply.department,
       appointmentSlot: reply.appointmentSlot,
+      appointmentSlotIso: reply.appointmentSlotIso,
       needsManualReview: reply.needsManualReview,
     });
   }
@@ -804,8 +846,10 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
     });
   }
 
+  finalizeIntakeIfDone(resolvedVisitId, resolvedLanguage, reply);
   res.json({
     success: true,
+    visitId: resolvedVisitId,
     gainNormalizationApplied,
     detectedLanguage,
     transcript: summary.primaryTranscript,
@@ -816,6 +860,7 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
     fields: reply.fields,
     department: reply.department,
     appointmentSlot: reply.appointmentSlot,
+    appointmentSlotIso: reply.appointmentSlotIso,
     needsManualReview: reply.needsManualReview,
   });
 }));
@@ -846,6 +891,19 @@ app.post('/api/intake/remind', asyncHandler(async (req: Request, res: Response) 
   const result = await placeReminderCall(phoneNumber, message);
   res.json(result);
 }));
+
+// Fallback sweep for serverless deployments where no long-lived process can
+// hold a `setTimeout` for the automatic 2-day/2-hour reminder calls: an
+// external cron (Vercel Cron, GitHub Actions schedule, etc.) can hit this
+// on a short interval (e.g. every 10-15 minutes) to fire anything that's due.
+app.post('/api/intake/reminders/run-due', asyncHandler(async (_req: Request, res: Response) => {
+  const result = await runDueReminders();
+  res.json({ success: true, ...result });
+}));
+
+app.get('/api/intake/reminders', (_req: Request, res: Response) => {
+  res.json({ success: true, reminders: listScheduledReminders() });
+});
 
 // 8. Reference data endpoint
 app.get('/api/benchmark/reference', (req: Request, res: Response) => {
@@ -880,6 +938,8 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  rehydratePendingReminders();
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`AfriVoice Studio Server running on http://0.0.0.0:${PORT}`);

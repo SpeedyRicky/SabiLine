@@ -32,9 +32,17 @@ transparent way to compare how well different speech models actually perform on 
   the conversation drifts off-topic for a few minutes. Once Gemini signals the intake is actually complete,
   it also picks a clinic department and proposes a near-future appointment slot (once a phone number is on
   file), and the record is saved to **My Visits**, a local per-browser visit history, honestly flagged for
-  manual review whenever fields are still missing or unclear. Each visit card has a "Send reminder call"
-  button that places a real outbound call via Twilio reminding the patient of that appointment, honestly
-  reporting "not configured" when Twilio credentials aren't set rather than faking a call.
+  manual review whenever fields are still missing or unclear. Every structured field (name, age, symptoms,
+  reason for visit, department, appointment) is recorded in English regardless of which of the five
+  languages the conversation itself happened in — only `spokenReply`, the line actually spoken back to the
+  patient, is allowed to be in their language — and the moment the intake is marked done, that English
+  summary is pushed automatically to the person in charge via `STAFF_NOTIFY_WEBHOOK_URL` (a Slack/Teams/
+  Discord/Zapier-compatible incoming webhook), honestly reporting "not configured" when unset. The same
+  "done" moment also arms two automatic outbound Twilio reminder calls — one about 2 days before the
+  confirmed appointment, one about 2 hours before — computed from a real ISO timestamp behind the scenes
+  (see `src/services/reminder/reminderScheduler.ts`); each visit card still has a manual "Send reminder
+  call" button as a guaranteed fallback, and both paths honestly report "not configured" when Twilio
+  credentials aren't set rather than faking a call.
 - **Voice Generator** (`?studio=1`) — turn text into real synthesized speech in 8 languages (English,
   French, Chinese, Hindi, Spanish, Igbo, Hausa, Yoruba), with Hausa/Igbo/Yoruba treated as first-class
   languages with dedicated native voices, plus multi-language batch generation and side-by-side audio
@@ -149,6 +157,16 @@ statement, including the explicit acknowledgment that this tool does not provide
   English-only: Twilio's built-in `<Say>` voice doesn't speak Hausa, Yoruba, Igbo, Fulfulde, or Nigerian
   Pidgin, so the reminder message is always read in English regardless of the language the intake itself
   was conducted in.
+- The automatic 2-day/2-hour reminder calls (`src/services/reminder/reminderScheduler.ts`) use in-memory
+  `setTimeout`s persisted to a local `data/scheduled-reminders.json` file so a normal `npm start` process
+  restart can recover pending reminders. On a serverless deployment (e.g. Vercel) the process does not stay
+  alive between requests, so a timer scheduled two days out will not reliably fire on its own — point an
+  external cron (Vercel Cron, a scheduled GitHub Action, etc.) at `POST /api/intake/reminders/run-due` every
+  10-15 minutes to sweep for anything due, or rely on the manual "Send reminder call" button, which always
+  works regardless of deployment target.
+- The person-in-charge notification (`src/services/notify/staffNotify.ts`, `STAFF_NOTIFY_WEBHOOK_URL`) is a
+  generic incoming-webhook push (Slack/Teams/Discord/Zapier-shaped payload), not a dedicated email/SMS
+  integration — wire the webhook URL to whatever channel staff actually monitor.
 - Because Patient Intake is a genuine open-ended conversation, it spends one `gemini-3.8-flash` call per
   turn (plus one for language detection on the first turn) rather than the 2-3 calls a fixed-question flow
   would use — a single intake call can use up a meaningful share of that model's 20-requests/day free-tier
