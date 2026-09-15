@@ -646,6 +646,7 @@ app.post('/api/intake/converse', async (req: Request, res: Response) => {
         detectedLanguage: null,
         transcript: null,
         primaryProviderId: null,
+        quotaExceeded: detection.quotaExceeded,
         attempts: {
           gemini: { success: false, error: detection.error, latencyMs: detection.latencyMs },
         },

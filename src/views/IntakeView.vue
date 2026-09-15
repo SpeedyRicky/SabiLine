@@ -195,8 +195,9 @@ async function sendTurn(audioBase64: string) {
 
   if (!data.transcript) {
     phase.value = 'error';
-    errorMessage.value =
-      "Sorry, none of the configured speech models could make out what was said. Please try again, closer to the microphone.";
+    errorMessage.value = data.quotaExceeded
+      ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand speech at the moment. Please try again later, or enable billing on the Gemini API key."
+      : "Sorry, none of the configured speech models could make out what was said. Please try again, closer to the microphone.";
     return;
   }
 
