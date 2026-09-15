@@ -11,36 +11,26 @@ import {
   Volume2,
   ChevronDown,
   ChevronUp,
-  Pencil,
 } from 'lucide-vue-next';
 import { LANGUAGES, type LanguageCode } from '../types';
 import { catalogLabel } from '../services/asr/catalog';
 import { blobToWavBase64, pickRecorderMimeType } from '../services/audio/wavEncoder';
 import { speakAloud } from '../services/tts/speakAloud';
 import {
-  INTAKE_CONFIDENCE_THRESHOLD,
   INTAKE_FIELD_LABELS,
   type IntakeFields,
   type IntakeRecord,
-  type IntakeTranscribeResponse,
-  type IntakeExtractionResponse,
+  type IntakeConversationTurn,
+  type IntakeConverseResponse,
 } from '../services/intake/types';
 import { logError } from '../utils/diagnostics';
 
-type Phase =
-  | 'idle'
-  | 'requesting_mic'
-  | 'recording'
-  | 'transcribing'
-  | 'extracting'
-  | 'reveal'
-  | 'confirming'
-  | 'complete'
-  | 'error';
+type Phase = 'idle' | 'requesting_mic' | 'recording' | 'thinking' | 'speaking' | 'complete' | 'error';
 
 const QUEUE_STORAGE_KEY = 'afrivoice_intake_queue';
-const INTAKE_LANGUAGE_CODES: LanguageCode[] = ['en', 'yo', 'ig', 'ha', 'pcm'];
-const INTAKE_LANGUAGES = LANGUAGES.filter((l) => INTAKE_LANGUAGE_CODES.includes(l.code));
+const LANGUAGE_LABEL: Partial<Record<LanguageCode, string>> = Object.fromEntries(
+  LANGUAGES.map((l) => [l.code, l.name])
+);
 
 const EMPTY_FIELDS: IntakeFields = {
   name: null,
@@ -51,19 +41,17 @@ const EMPTY_FIELDS: IntakeFields = {
   allergies: null,
 };
 
-const selectedLanguage = ref<LanguageCode>('en');
 const phase = ref<Phase>('idle');
-const turnIndex = ref(0); // 0 = first turn, 1 = follow-up turn
+const detectedLanguage = ref<LanguageCode | null>(null);
+const callStartedAt = ref<number | null>(null);
 const errorMessage = ref<string | null>(null);
 const showDebugPanel = ref(false);
 
-const transcriptTurns = ref<string[]>([]);
-const editableFields = ref<IntakeFields>({ ...EMPTY_FIELDS });
-const confidencePerField = ref<Record<string, number>>({});
-const overallConfidence = ref<number | null>(null);
-const followUpQuestion = ref<string | null>(null);
+const turns = ref<IntakeConversationTurn[]>([]);
+const fields = ref<IntakeFields>({ ...EMPTY_FIELDS });
+const needsManualReview = ref(false);
 const primaryAsrProviderId = ref<string | null>(null);
-const asrAttempts = ref<IntakeTranscribeResponse['attempts']>({});
+const asrAttempts = ref<IntakeConverseResponse['attempts']>({});
 const gainNormalizationApplied = ref(false);
 const lastSpeechFallback = ref<string | null>(null);
 
@@ -96,28 +84,16 @@ onMounted(() => {
   queue.value = loadQueue();
 });
 
-const confidencePercent = computed(() =>
-  overallConfidence.value === null ? null : Math.round(overallConfidence.value * 100)
-);
-
-const currentTranscript = computed(() => transcriptTurns.value[transcriptTurns.value.length - 1] ?? '');
-
-const hasExtraction = computed(() => Object.keys(confidencePerField.value).length > 0);
-
-function fieldIsLowConfidence(key: keyof IntakeFields): boolean {
-  const c = confidencePerField.value[key];
-  return c === undefined || c < INTAKE_CONFIDENCE_THRESHOLD;
-}
+const hasStarted = computed(() => turns.value.length > 0);
 
 function resetForNewIntake() {
   phase.value = 'idle';
-  turnIndex.value = 0;
+  detectedLanguage.value = null;
+  callStartedAt.value = null;
   errorMessage.value = null;
-  transcriptTurns.value = [];
-  editableFields.value = { ...EMPTY_FIELDS };
-  confidencePerField.value = {};
-  overallConfidence.value = null;
-  followUpQuestion.value = null;
+  turns.value = [];
+  fields.value = { ...EMPTY_FIELDS };
+  needsManualReview.value = false;
   primaryAsrProviderId.value = null;
   asrAttempts.value = {};
   gainNormalizationApplied.value = false;
@@ -128,6 +104,7 @@ function resetForNewIntake() {
 async function startRecording() {
   errorMessage.value = null;
   phase.value = 'requesting_mic';
+  if (callStartedAt.value === null) callStartedAt.value = Date.now();
 
   try {
     activeStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -166,7 +143,7 @@ function stopRecording() {
 }
 
 async function handleRecordingStopped() {
-  phase.value = 'transcribing';
+  phase.value = 'thinking';
 
   try {
     const blob = new Blob(recordedChunks, { type: recordedChunks[0]?.type || 'audio/webm' });
@@ -175,7 +152,7 @@ async function handleRecordingStopped() {
     }
 
     const audioBase64 = await blobToWavBase64(blob);
-    await processTurn(audioBase64);
+    await sendTurn(audioBase64);
   } catch (err) {
     logError('intake:processRecording', err);
     phase.value = 'error';
@@ -183,111 +160,82 @@ async function handleRecordingStopped() {
   }
 }
 
-async function processTurn(audioBase64: string) {
-  const transcribeRes = await fetch('/api/intake/transcribe', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ audioBase64, mimeType: 'audio/wav', language: selectedLanguage.value }),
-  });
-  const transcribeData: IntakeTranscribeResponse = await transcribeRes.json();
-
-  if (!transcribeRes.ok || !transcribeData.success) {
-    phase.value = 'error';
-    errorMessage.value = transcribeData.error || 'Transcription failed.';
-    return;
-  }
-
-  asrAttempts.value = transcribeData.attempts;
-  primaryAsrProviderId.value = transcribeData.primaryProviderId;
-  gainNormalizationApplied.value = Boolean(transcribeData.gainNormalizationApplied);
-
-  if (!transcribeData.primaryTranscript) {
-    phase.value = 'error';
-    errorMessage.value =
-      "Sorry, none of the configured speech models could make out what was said. Please try speaking again, closer to the microphone.";
-    return;
-  }
-
-  transcriptTurns.value = [...transcriptTurns.value, transcribeData.primaryTranscript];
-  phase.value = 'extracting';
-
-  const extractRes = await fetch('/api/intake/extract', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      transcript: transcribeData.primaryTranscript,
-      language: selectedLanguage.value,
-      previousFields: turnIndex.value > 0 ? editableFields.value : undefined,
-    }),
-  });
-  const extractData: IntakeExtractionResponse = await extractRes.json();
-
-  if (!extractRes.ok || !extractData.success) {
-    phase.value = 'error';
-    errorMessage.value = extractData.error || 'Could not process what was said. Please try again.';
-    return;
-  }
-
-  editableFields.value = extractData.fields ?? { ...EMPTY_FIELDS };
-  overallConfidence.value = extractData.overallConfidence ?? 0;
-  confidencePerField.value = extractData.confidencePerField ?? {};
-  followUpQuestion.value = extractData.followUpQuestion ?? null;
-  phase.value = 'reveal';
-
-  const isConfident = (extractData.overallConfidence ?? 0) >= INTAKE_CONFIDENCE_THRESHOLD;
-
-  if (turnIndex.value === 0 && !isConfident && followUpQuestion.value) {
-    await askFollowUp(followUpQuestion.value);
-  } else {
-    await finalizeIntake();
-  }
-}
-
-async function askFollowUp(question: string) {
-  phase.value = 'confirming';
-  turnIndex.value = 1;
-  const outcome = await speakAloud(question, selectedLanguage.value);
-  lastSpeechFallback.value = outcome.usedProvider === 'browser' ? outcome.fallbackReason ?? null : null;
-  // The mic re-activates automatically for the patient's answer — no extra
-  // tap required, so the follow-up loop reads as one continuous exchange.
-  await startRecording();
-}
-
 function generateReferenceNumber(): string {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
 
-async function finalizeIntake() {
-  const needsManualReview = (overallConfidence.value ?? 0) < INTAKE_CONFIDENCE_THRESHOLD;
-  const f = editableFields.value;
+async function sendTurn(audioBase64: string) {
+  const elapsedMinutes = callStartedAt.value ? Math.round((Date.now() - callStartedAt.value) / 60000) : 0;
 
-  const parts: string[] = ['Got it.'];
-  if (f.reasonForVisit && f.paymentType) {
-    parts.push(`I've logged your visit for ${f.reasonForVisit}, ${paymentPhrasing(f.paymentType)}.`);
-  } else if (f.reasonForVisit) {
-    parts.push(`I've logged your visit for ${f.reasonForVisit}.`);
+  const res = await fetch('/api/intake/converse', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      audioBase64,
+      mimeType: 'audio/wav',
+      language: detectedLanguage.value ?? 'auto',
+      history: turns.value,
+      elapsedMinutes,
+    }),
+  });
+  const data: IntakeConverseResponse = await res.json();
+
+  if (!res.ok || !data.success) {
+    phase.value = 'error';
+    errorMessage.value = data.quotaExceeded
+      ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand or respond at the moment. Please try again later, or enable billing on the Gemini API key."
+      : data.error || 'Something went wrong. Please try again.';
+    return;
   }
-  parts.push(
-    needsManualReview
-      ? 'A staff member will review your details shortly.'
-      : 'A staff member will confirm shortly.'
-  );
-  const confirmationText = parts.join(' ');
 
-  phase.value = 'confirming';
-  const outcome = await speakAloud(confirmationText, selectedLanguage.value);
+  if (data.detectedLanguage) detectedLanguage.value = data.detectedLanguage;
+  asrAttempts.value = data.attempts ?? {};
+  primaryAsrProviderId.value = data.primaryProviderId ?? null;
+  gainNormalizationApplied.value = Boolean(data.gainNormalizationApplied);
+
+  if (!data.transcript) {
+    phase.value = 'error';
+    errorMessage.value = data.quotaExceeded
+      ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand speech at the moment. Please try again later, or enable billing on the Gemini API key."
+      : "Sorry, none of the configured speech models could make out what was said. Please try again, closer to the microphone.";
+    return;
+  }
+
+  turns.value = [...turns.value, { role: 'user', text: data.transcript }];
+
+  if (!data.spokenReply) {
+    phase.value = 'error';
+    errorMessage.value = 'SabiLine had nothing to say back — please try again.';
+    return;
+  }
+
+  turns.value = [...turns.value, { role: 'model', text: data.spokenReply }];
+  if (data.fields) fields.value = { ...EMPTY_FIELDS, ...data.fields };
+
+  phase.value = 'speaking';
+  const outcome = await speakAloud(data.spokenReply, detectedLanguage.value ?? 'en');
   lastSpeechFallback.value = outcome.usedProvider === 'browser' ? outcome.fallbackReason ?? null : null;
+
+  if (data.done) {
+    finalizeIntake(Boolean(data.needsManualReview));
+  } else {
+    // The mic re-activates automatically for the patient's next reply — no
+    // extra tap required, so the conversation reads as one continuous call.
+    await startRecording();
+  }
+}
+
+function finalizeIntake(reviewNeeded: boolean) {
+  needsManualReview.value = reviewNeeded;
 
   const record: IntakeRecord = {
     id: `INTAKE-${Date.now()}`,
     referenceNumber: generateReferenceNumber(),
     createdAt: new Date().toISOString(),
-    language: selectedLanguage.value,
-    transcriptTurns: transcriptTurns.value,
-    fields: f,
-    overallConfidence: overallConfidence.value ?? 0,
-    followUpUsed: turnIndex.value > 0,
-    needsManualReview,
+    language: detectedLanguage.value ?? 'en',
+    conversation: turns.value,
+    fields: fields.value,
+    needsManualReview: reviewNeeded,
     primaryAsrProviderId: primaryAsrProviderId.value,
     status: 'queued_for_review',
   };
@@ -296,13 +244,6 @@ async function finalizeIntake() {
   queue.value = [record, ...queue.value];
   saveQueue();
   phase.value = 'complete';
-}
-
-function paymentPhrasing(paymentType: string): string {
-  const lower = paymentType.toLowerCase();
-  if (lower.includes('insur') || lower.includes('nhis')) return `paying through ${paymentType}`;
-  if (lower.includes('cash') || lower.includes('pocket')) return 'paying out of pocket';
-  return `paying via ${paymentType}`;
 }
 
 function clearQueue() {
@@ -321,22 +262,16 @@ function clearQueue() {
         SabiLine Patient Intake
       </h1>
       <p class="text-sm text-slate-600 mt-1">
-        Tap to speak — English, Yoruba, Igbo, Hausa, or Pidgin.
+        Tap to speak in English, Yoruba, Igbo, Hausa, Fulfulde, or Pidgin — no need to pick one, and no fixed
+        script: SabiLine responds to whatever you actually say.
       </p>
     </div>
 
     <div class="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
-      <div class="flex items-center justify-center gap-3 flex-wrap">
-        <label class="text-xs font-medium text-slate-600">
-          Language
-          <select
-            v-model="selectedLanguage"
-            :disabled="phase !== 'idle' && phase !== 'error'"
-            class="ml-2 border border-slate-300 rounded-md text-sm px-2 py-1"
-          >
-            <option v-for="lang in INTAKE_LANGUAGES" :key="lang.code" :value="lang.code">{{ lang.flag }} {{ lang.name }}</option>
-          </select>
-        </label>
+      <div v-if="detectedLanguage" class="flex items-center justify-center">
+        <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800">
+          Detected language: {{ LANGUAGE_LABEL[detectedLanguage] || detectedLanguage }}
+        </span>
       </div>
 
       <!-- Mic control -->
@@ -364,15 +299,14 @@ function clearQueue() {
         </div>
 
         <p class="text-sm text-slate-700 font-medium">
-          <template v-if="phase === 'idle'">{{ turnIndex === 0 ? 'Tap to speak' : 'Tap to answer' }}</template>
+          <template v-if="phase === 'idle'">{{ hasStarted ? 'Tap to reply' : 'Tap to speak' }}</template>
           <template v-else-if="phase === 'requesting_mic'">Requesting microphone access…</template>
           <template v-else-if="phase === 'recording'">Listening…</template>
-          <template v-else-if="phase === 'transcribing'">Understanding your speech…</template>
-          <template v-else-if="phase === 'extracting'">
-            {{ primaryAsrProviderId ? `Understood via ${catalogLabel(primaryAsrProviderId)} — extracting details…` : 'Extracting details…' }}
+          <template v-else-if="phase === 'thinking'">
+            {{ primaryAsrProviderId ? `Understanding via ${catalogLabel(primaryAsrProviderId)}…` : 'Understanding…' }}
           </template>
-          <template v-else-if="phase === 'confirming'">
-            <Volume2 class="w-4 h-4 inline -mt-0.5" /> Speaking…
+          <template v-else-if="phase === 'speaking'">
+            <Volume2 class="w-4 h-4 inline -mt-0.5" /> SabiLine is speaking…
           </template>
           <template v-else-if="phase === 'error'">Ready to try again</template>
         </p>
@@ -389,24 +323,32 @@ function clearQueue() {
       </div>
     </div>
 
-    <!-- Transcript + structured record -->
-    <div v-if="hasExtraction" class="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
-      <div>
-        <h2 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Transcript</h2>
-        <p class="text-sm text-slate-800 italic">"{{ currentTranscript }}"</p>
+    <!-- Conversation transcript -->
+    <div v-if="hasStarted" class="bg-white border border-slate-200 rounded-xl p-5">
+      <h2 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Conversation</h2>
+      <div class="flex flex-col gap-2.5 max-h-80 overflow-y-auto pr-1">
+        <div
+          v-for="(turn, idx) in turns"
+          :key="idx"
+          class="max-w-[85%] px-3.5 py-2 rounded-2xl text-sm leading-snug"
+          :class="turn.role === 'model'
+            ? 'self-start bg-emerald-50 text-emerald-900 rounded-bl-sm'
+            : 'self-end bg-slate-100 text-slate-800 rounded-br-sm'"
+        >
+          <span class="block text-[10px] uppercase tracking-wide opacity-60 mb-0.5">
+            {{ turn.role === 'model' ? 'SabiLine' : 'You' }}
+          </span>
+          {{ turn.text }}
+        </div>
       </div>
+    </div>
 
+    <!-- Live structured record -->
+    <div v-if="hasStarted" class="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
       <div class="flex items-center justify-between">
         <h2 class="text-sm font-semibold text-slate-800">
           {{ phase === 'complete' ? 'Intake submitted' : 'Extracted so far' }}
         </h2>
-        <span
-          v-if="confidencePercent !== null"
-          class="text-xs font-medium px-2 py-0.5 rounded-full"
-          :class="confidencePercent >= 70 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'"
-        >
-          Confidence {{ confidencePercent }}%
-        </span>
       </div>
 
       <div v-if="phase === 'complete'" class="text-center py-2">
@@ -419,27 +361,10 @@ function clearQueue() {
       </div>
 
       <dl class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-        <div
-          v-for="(label, key, idx) in INTAKE_FIELD_LABELS"
-          :key="key"
-          class="intake-field-reveal"
-          :style="{ animationDelay: `${idx * 90}ms` }"
-        >
-          <dt class="text-xs text-slate-500 flex items-center gap-1">
-            {{ label }}
-            <Pencil v-if="fieldIsLowConfidence(key) && phase !== 'complete' && editableFields[key]" class="w-3 h-3 text-amber-600" />
-          </dt>
-          <dd>
-            <input
-              v-if="fieldIsLowConfidence(key) && phase !== 'complete'"
-              v-model="editableFields[key]"
-              type="text"
-              placeholder="Not captured — tap to add"
-              class="w-full text-sm font-medium px-2 py-1 rounded border bg-amber-50 border-amber-300 text-slate-900 placeholder:text-amber-600 placeholder:italic focus:outline-none focus:ring-2 focus:ring-amber-400"
-            />
-            <span v-else class="font-medium" :class="editableFields[key] ? 'text-slate-900' : 'text-slate-400 italic'">
-              {{ editableFields[key] || 'Not captured' }}
-            </span>
+        <div v-for="(label, key, idx) in INTAKE_FIELD_LABELS" :key="key" class="intake-field-reveal" :style="{ animationDelay: `${idx * 90}ms` }">
+          <dt class="text-xs text-slate-500">{{ label }}</dt>
+          <dd class="font-medium" :class="fields[key] ? 'text-slate-900' : 'text-slate-400 italic'">
+            {{ fields[key] || 'Not captured' }}
           </dd>
         </div>
       </dl>
@@ -460,12 +385,12 @@ function clearQueue() {
     </div>
 
     <!-- Judge debug panel: raw per-model outputs, hidden by default -->
-    <div v-if="Object.keys(asrAttempts).length > 0" class="bg-white border border-slate-200 rounded-xl p-4">
+    <div v-if="Object.keys(asrAttempts ?? {}).length > 0" class="bg-white border border-slate-200 rounded-xl p-4">
       <button
         class="w-full flex items-center justify-between text-sm font-semibold text-slate-700"
         @click="showDebugPanel = !showDebugPanel"
       >
-        <span>Judge debug: model outputs for this clip</span>
+        <span>Judge debug: model outputs for this turn</span>
         <ChevronDown v-if="!showDebugPanel" class="w-4 h-4" />
         <ChevronUp v-else class="w-4 h-4" />
       </button>
@@ -485,7 +410,7 @@ function clearQueue() {
           <div class="mt-0.5">
             {{ attempt.success ? `"${attempt.transcript}"` : attempt.notConfigured ? 'Not configured' : `Failed: ${attempt.error}` }}
           </div>
-          <div v-if="id === primaryAsrProviderId" class="mt-0.5 font-semibold">Used for this intake</div>
+          <div v-if="id === primaryAsrProviderId" class="mt-0.5 font-semibold">Used for this turn</div>
         </div>
       </div>
       <p v-if="showDebugPanel && gainNormalizationApplied" class="text-[11px] text-slate-500 mt-2">

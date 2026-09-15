@@ -22,19 +22,6 @@ export const INTAKE_FIELD_LABELS: Record<keyof IntakeFields, string> = {
   allergies: 'Known allergies',
 };
 
-export interface IntakeExtractionResponse {
-  success: boolean;
-  fields?: IntakeFields;
-  confidencePerField?: Record<keyof IntakeFields, number>;
-  overallConfidence?: number;
-  missingOrUnclearFields?: (keyof IntakeFields)[];
-  followUpQuestion?: string | null;
-  error?: string;
-}
-
-// Below this, the flow asks one spoken follow-up question before proceeding.
-export const INTAKE_CONFIDENCE_THRESHOLD = 0.7;
-
 export interface IntakeTranscriptAttempt {
   success: boolean;
   transcript?: string;
@@ -43,13 +30,32 @@ export interface IntakeTranscriptAttempt {
   latencyMs: number;
 }
 
-export interface IntakeTranscribeResponse {
+// One turn of the ongoing conversation with the patient, in the shape
+// Gemini's multi-turn chat expects (role 'model' for SabiLine's own replies,
+// mirroring the Gemini API's own turn-role naming).
+export interface IntakeConversationTurn {
+  role: 'user' | 'model';
+  text: string;
+}
+
+// Response from /api/intake/converse — one real audio turn in, a live
+// conversational reply out. Every field below reflects something that
+// actually happened this turn: a real transcript, a real Gemini reply, and
+// (once "done") the model's best current understanding of the intake
+// record, honestly incomplete wherever the patient never said something.
+export interface IntakeConverseResponse {
   success: boolean;
-  primaryProviderId: string | null;
-  primaryTranscript: string | null;
-  attempts: Record<string, IntakeTranscriptAttempt>;
+  detectedLanguage?: LanguageCode | null;
+  transcript?: string | null;
+  primaryProviderId?: string | null;
+  attempts?: Record<string, IntakeTranscriptAttempt>;
   gainNormalizationApplied?: boolean;
+  spokenReply?: string;
+  done?: boolean;
+  fields?: IntakeFields;
+  needsManualReview?: boolean;
   error?: string;
+  quotaExceeded?: boolean;
 }
 
 export interface IntakeRecord {
@@ -57,10 +63,8 @@ export interface IntakeRecord {
   referenceNumber: string;
   createdAt: string;
   language: LanguageCode;
-  transcriptTurns: string[];
+  conversation: IntakeConversationTurn[];
   fields: IntakeFields;
-  overallConfidence: number;
-  followUpUsed: boolean;
   needsManualReview: boolean;
   primaryAsrProviderId: string | null;
   status: 'queued_for_review';
