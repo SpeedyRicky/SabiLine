@@ -23,6 +23,14 @@ const SUPPORTED_CODES: LanguageCode[] = ['en', 'pcm', 'yo', 'ig', 'ha', 'ful'];
 const LANGUAGE_CHOICES_DESC =
   'English (en), Nigerian Pidgin (pcm), Yoruba (yo), Igbo (ig), Hausa (ha), or Fulfulde (ful)';
 
+// Nigerian Pidgin draws most of its vocabulary from English, so a classifier
+// told only "Nigerian Pidgin (pcm)" reliably returns "en" for it. That single
+// misread is costly here: the detected language is locked in for the rest of
+// the call, so a Pidgin speaker would be answered in English start to finish.
+// Naming the grammatical markers explicitly is what separates the two.
+const PIDGIN_DISAMBIGUATION =
+  'Important: Nigerian Pidgin is a distinct language and must be labelled "pcm", never "en". It borrows English words but has its own grammar. Treat it as pcm if you hear markers such as: "dey", "don", "go" as a future marker, "wetin", "abeg", "na" as a copula, "no be", "sabi", "comot", "pikin", "belle", "wahala", "small small", "make I", "e be like say". Judge by these structures, not by how many individual words look English. Only use "en" for standard or Nigerian-accented English that lacks this grammar.';
+
 /**
  * Identifies which language a patient is speaking and transcribes it, in one
  * Gemini call — this is what lets the intake flow skip a manual language
@@ -46,7 +54,7 @@ export async function detectLanguageAndTranscribe(audioBase64: string, mimeType:
             {
               parts: [
                 {
-                  text: `Listen to this audio of a patient speaking at a health clinic intake desk. First identify which language they are speaking, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. If none of those are a good match, still pick the closest one. Then transcribe exactly what they said, including any code-switching between languages. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful", "transcript": string}`,
+                  text: `Listen to this audio of a patient speaking at a health clinic intake desk. First identify which language they are speaking, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. If none of those are a good match, still pick the closest one. ${PIDGIN_DISAMBIGUATION} Then transcribe exactly what they said, including any code-switching between languages. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful", "transcript": string}`,
                 },
                 { inlineData: { mimeType, data: audioBase64 } },
               ],
@@ -110,7 +118,7 @@ export async function detectLanguageFromText(text: string): Promise<DetectLangua
             {
               parts: [
                 {
-                  text: `A patient typed this at a health clinic intake desk: "${text.replace(/"/g, "'")}". Identify which language they most likely intended, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful"}`,
+                  text: `A patient typed this at a health clinic intake desk: "${text.replace(/"/g, "'")}". Identify which language they most likely intended, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. ${PIDGIN_DISAMBIGUATION} Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful"}`,
                 },
               ],
             },

@@ -94,10 +94,20 @@ function buildSystemInstructionWithSlots(
     ? ' The call has just connected and the patient hasn\'t said anything yet — don\'t wait for them: open with a brief, warm greeting that introduces yourself as SabiLine and invites them to share why they\'re calling, in English (you don\'t know their language yet).'
     : '';
 
+  // The opening greeting is always English (nobody has spoken yet, so there's
+  // no language to detect). Every turn after that runs in the language the
+  // patient actually used, which means the model has to switch away from the
+  // English it already produced — and a model will otherwise follow the
+  // momentum of the conversation it can see and keep answering in English.
+  // Hence the emphatic, repeated directive rather than a passing mention.
+  const languageDirective = isOpeningCall
+    ? `Write "spokenReply" in ${langName}.`
+    : `LANGUAGE (most important rule): write every word of "spokenReply" in ${langName}. ${langName} is the language this patient is speaking, it was chosen by them, and it is now fixed for the whole call. The greeting earlier in this conversation is in English only because their language was not yet known — do not treat it as a precedent. Reply in ${langName} on this turn and on every remaining turn. Never let "spokenReply" slip back into English, never say the same thing twice in two languages, and never mention, explain or apologise for which language you are using. If the patient mixes languages, mirror that mixing, but ${langName} stays your base language. This rule governs "spokenReply" only — every other JSON field stays in English, as set out below.`;
+
   return [
     'You are SabiLine, a warm, human-sounding intake receptionist at an African health clinic.',
     'Speak naturally like a real person: vary your wording, react to what the patient actually said, keep each reply short (1-2 sentences, occasionally 3) since it will be read aloud, and never repeat a question you already have an answer to.' + openingNote,
-    `Respond in ${langName} for "spokenReply" ONLY, matching any code-switching the patient uses, without ever mentioning that you're doing this.`,
+    languageDirective,
     "Through natural back-and-forth, not a rigid checklist and not necessarily in this order, find out: the patient's name, their age or date of birth, a phone number to reach them on (explain it's so the clinic can call to remind them of their appointment), their payment or insurance type, their reason for visiting, how long their symptoms have lasted, and any known allergies. Ask about one thing at a time. If they don't know or decline to answer something, don't press repeatedly — move on and leave it blank.",
     "It's fine for the patient to chat about other things along the way — follow them naturally and don't refuse to engage." + driftNote,
     `Once you have gathered what you reasonably can, pick the single best-fitting department for their reason for visit from this list: ${DEPARTMENTS.join(', ')} — then propose exactly one appointment time from these options: ${slots.map((s) => s.label).join(', ')} (say it to the patient in ${langName}, but the "appointmentSlot" JSON field must be copied verbatim from that English list). If they want a different time, offer another option from that same list. Once they confirm a time, let them know their visit is logged and a staff member will follow up shortly, then say goodbye — set "done" to true only on that final message.`,

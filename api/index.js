@@ -396,6 +396,7 @@ async function transcribeWithAllProviders(audioBase64, mimeType, language, selec
 // src/services/asr/detectLanguage.ts
 var SUPPORTED_CODES = ["en", "pcm", "yo", "ig", "ha", "ful"];
 var LANGUAGE_CHOICES_DESC = "English (en), Nigerian Pidgin (pcm), Yoruba (yo), Igbo (ig), Hausa (ha), or Fulfulde (ful)";
+var PIDGIN_DISAMBIGUATION = 'Important: Nigerian Pidgin is a distinct language and must be labelled "pcm", never "en". It borrows English words but has its own grammar. Treat it as pcm if you hear markers such as: "dey", "don", "go" as a future marker, "wetin", "abeg", "na" as a copula, "no be", "sabi", "comot", "pikin", "belle", "wahala", "small small", "make I", "e be like say". Judge by these structures, not by how many individual words look English. Only use "en" for standard or Nigerian-accented English that lacks this grammar.';
 async function detectLanguageAndTranscribe(audioBase64, mimeType) {
   const start = Date.now();
   const ai = getGeminiClient();
@@ -411,7 +412,7 @@ async function detectLanguageAndTranscribe(audioBase64, mimeType) {
             {
               parts: [
                 {
-                  text: `Listen to this audio of a patient speaking at a health clinic intake desk. First identify which language they are speaking, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. If none of those are a good match, still pick the closest one. Then transcribe exactly what they said, including any code-switching between languages. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful", "transcript": string}`
+                  text: `Listen to this audio of a patient speaking at a health clinic intake desk. First identify which language they are speaking, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. If none of those are a good match, still pick the closest one. ${PIDGIN_DISAMBIGUATION} Then transcribe exactly what they said, including any code-switching between languages. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful", "transcript": string}`
                 },
                 { inlineData: { mimeType, data: audioBase64 } }
               ]
@@ -454,7 +455,7 @@ async function detectLanguageFromText(text) {
             {
               parts: [
                 {
-                  text: `A patient typed this at a health clinic intake desk: "${text.replace(/"/g, "'")}". Identify which language they most likely intended, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful"}`
+                  text: `A patient typed this at a health clinic intake desk: "${text.replace(/"/g, "'")}". Identify which language they most likely intended, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. ${PIDGIN_DISAMBIGUATION} Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful"}`
                 }
               ]
             }
@@ -517,10 +518,11 @@ function buildSystemInstructionWithSlots(language, elapsedMinutes, isOpeningCall
   const langName = LANGUAGE_NAMES[language] || language;
   const driftNote = elapsedMinutes >= 2 ? ` This call has been going for about ${elapsedMinutes} minute${elapsedMinutes === 1 ? "" : "s"} so far. If the conversation has drifted away from health or clinic topics and stayed off-topic for somewhere in the range of 2 to 7 minutes of that drift, gently mention \u2014 once, not every message \u2014 that you're the SabiLine health line and are best able to help with health-related concerns, then offer to get back to their visit. Don't cut off brief small talk; only redirect once it's clearly gone on a while.` : "";
   const openingNote = isOpeningCall ? " The call has just connected and the patient hasn't said anything yet \u2014 don't wait for them: open with a brief, warm greeting that introduces yourself as SabiLine and invites them to share why they're calling, in English (you don't know their language yet)." : "";
+  const languageDirective = isOpeningCall ? `Write "spokenReply" in ${langName}.` : `LANGUAGE (most important rule): write every word of "spokenReply" in ${langName}. ${langName} is the language this patient is speaking, it was chosen by them, and it is now fixed for the whole call. The greeting earlier in this conversation is in English only because their language was not yet known \u2014 do not treat it as a precedent. Reply in ${langName} on this turn and on every remaining turn. Never let "spokenReply" slip back into English, never say the same thing twice in two languages, and never mention, explain or apologise for which language you are using. If the patient mixes languages, mirror that mixing, but ${langName} stays your base language. This rule governs "spokenReply" only \u2014 every other JSON field stays in English, as set out below.`;
   return [
     "You are SabiLine, a warm, human-sounding intake receptionist at an African health clinic.",
     "Speak naturally like a real person: vary your wording, react to what the patient actually said, keep each reply short (1-2 sentences, occasionally 3) since it will be read aloud, and never repeat a question you already have an answer to." + openingNote,
-    `Respond in ${langName} for "spokenReply" ONLY, matching any code-switching the patient uses, without ever mentioning that you're doing this.`,
+    languageDirective,
     "Through natural back-and-forth, not a rigid checklist and not necessarily in this order, find out: the patient's name, their age or date of birth, a phone number to reach them on (explain it's so the clinic can call to remind them of their appointment), their payment or insurance type, their reason for visiting, how long their symptoms have lasted, and any known allergies. Ask about one thing at a time. If they don't know or decline to answer something, don't press repeatedly \u2014 move on and leave it blank.",
     "It's fine for the patient to chat about other things along the way \u2014 follow them naturally and don't refuse to engage." + driftNote,
     `Once you have gathered what you reasonably can, pick the single best-fitting department for their reason for visit from this list: ${DEPARTMENTS.join(", ")} \u2014 then propose exactly one appointment time from these options: ${slots.map((s) => s.label).join(", ")} (say it to the patient in ${langName}, but the "appointmentSlot" JSON field must be copied verbatim from that English list). If they want a different time, offer another option from that same list. Once they confirm a time, let them know their visit is logged and a staff member will follow up shortly, then say goodbye \u2014 set "done" to true only on that final message.`,
