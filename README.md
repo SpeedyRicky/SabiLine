@@ -16,15 +16,17 @@ transparent way to compare how well different speech models actually perform on 
 - **Voice Generator** — turn text into real synthesized speech in 8 languages (English, French, Chinese,
   Hindi, Spanish, Igbo, Hausa, Yoruba), with Hausa/Igbo/Yoruba treated as first-class languages with
   dedicated native voices, plus multi-language batch generation and side-by-side audio comparison.
-- **Patient Voice Intake** — a "press to talk" spoken check-in flow with no language picker: the first
-  turn's audio goes to Gemini for combined language identification + transcription (English, Nigerian
-  Pidgin, Yoruba, Igbo, or Hausa), then that same clip is sent to every other configured ASR provider
-  (Sahara, the two custom benchmark endpoints) for comparison. A structured clinical intake record (name,
-  age/DOB, payment type, reason for visit, symptom duration, allergies) is extracted from the transcript,
-  and the system either confirms the record back by voice or asks one spoken follow-up question — in the
-  same detected language — when confidence is low before finalizing. The finished record is shown as JSON
-  and queued in a local "front desk" list, honestly flagged for manual review whenever confidence stays low
-  even after the follow-up.
+- **Patient Voice Intake** — an open-ended spoken conversation with no language picker and no fixed
+  script: the first turn's audio goes to Gemini for combined language identification + transcription
+  (English, Nigerian Pidgin, Yoruba, Igbo, Hausa, or Fulfulde), then every turn's audio is also sent to
+  every other configured ASR provider (Sahara, the two custom benchmark endpoints) for comparison. Each
+  reply is generated live by Gemini as one more turn in the conversation — it asks about whatever it
+  doesn't have yet (name, age/DOB, payment type, reason for visit, symptom duration, allergies), in
+  whatever order feels natural, gently steering the caller back to health topics if the conversation
+  drifts off-topic for a few minutes, and the mic re-activates automatically after every reply so the
+  whole thing reads as one continuous call. Once Gemini signals the intake is actually complete, the
+  record is shown as JSON and queued in a local "front desk" list, honestly flagged for manual review
+  whenever fields are still missing or unclear.
 - **Speech Benchmark** — run Word Error Rate / Character Error Rate evaluation across three ASR model
   identities (Sahara, Model B, Model C) on a de-identified clinical audio sample set, with configurable
   text normalization and per-utterance error inspection.
@@ -127,3 +129,7 @@ statement, including the explicit acknowledgment that this tool does not provide
 - Patient Intake currently runs entirely in the browser tab (mic capture via `getUserMedia`). A telephony
   front end (e.g. Twilio, so a real phone call could drive the same intake pipeline) is a natural extension
   but is out of scope for the primary deliverable.
+- Because Patient Intake is a genuine open-ended conversation, it spends one `gemini-3.8-flash` call per
+  turn (plus one for language detection on the first turn) rather than the 2-3 calls a fixed-question flow
+  would use — a single intake call can use up a meaningful share of that model's 20-requests/day free-tier
+  cap. Enabling billing on the Gemini API key removes this ceiling.

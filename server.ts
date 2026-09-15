@@ -8,6 +8,7 @@ import { synthesizeReferenceAudio } from './src/services/tts/geminiSynthesize';
 import { ASR_PROVIDER_REGISTRY, DEFAULT_BENCHMARK_MODELS } from './src/services/asr/registry';
 import { transcribeWithAllProviders, LIVE_ASR_PRIORITY } from './src/services/asr/transcribeLive';
 import { detectLanguageAndTranscribe } from './src/services/asr/detectLanguage';
+import { getSabiLineReply } from './src/services/intake/converse';
 import { normalizeQuietAudio } from './src/services/asr/audioPreprocess';
 import { calculateWER } from './src/services/benchmark/wer';
 import { calculateCER } from './src/services/benchmark/cer';
@@ -593,11 +594,25 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
   });
 });
 
-// Patient Intake: live ASR — one real audio clip in, transcripts from every
-// configured provider out. Quiet mic recordings get the same gain boost as
-// benchmark reference audio, so soft-spoken patients are still heard clearly.
-app.post('/api/intake/transcribe', async (req: Request, res: Response) => {
-  const { audioBase64, mimeType = 'audio/wav', language = 'auto', selectedModels } = req.body;
+// Patient Intake: one live conversational turn. Real audio in (gain-boosted
+// the same way benchmark reference audio is, so soft-spoken patients are
+// still heard clearly), transcribed by every configured ASR provider —
+// detecting the spoken language on the first turn only, since browser
+// speech recognition needs a language picked in advance but a real listen-
+// first-classify-after model doesn't, so the patient is never asked to pick
+// one — then handed to Gemini as one more turn in the ongoing conversation.
+// The reply is genuinely generated per turn, never a fixed script: SabiLine
+// asks about whatever it doesn't have yet, in whatever order feels natural,
+// and only signals "done" once it has actually gathered what it can.
+app.post('/api/intake/converse', async (req: Request, res: Response) => {
+  const {
+    audioBase64,
+    mimeType = 'audio/wav',
+    language = 'auto',
+    history = [],
+    elapsedMinutes = 0,
+    selectedModels,
+  } = req.body;
 
   if (!audioBase64) {
     return res.status(400).json({ success: false, error: 'audioBase64 is required.' });
@@ -618,9 +633,6 @@ app.post('/api/intake/transcribe', async (req: Request, res: Response) => {
 
   const selected: string[] = Array.isArray(selectedModels) && selectedModels.length > 0 ? selectedModels : LIVE_ASR_PRIORITY;
 
-  // Browser speech recognition needs a language picked in advance, so real
-  // auto-detection has to go through a model that can listen first and
-  // classify after — the patient is never asked to pick a language.
   let resolvedLanguage: LanguageCode = language === 'auto' ? 'en' : (language as LanguageCode);
   let detectedLanguage: LanguageCode | null = null;
   let geminiTranscript: string | null = null;
@@ -632,8 +644,8 @@ app.post('/api/intake/transcribe', async (req: Request, res: Response) => {
         success: true,
         gainNormalizationApplied,
         detectedLanguage: null,
+        transcript: null,
         primaryProviderId: null,
-        primaryTranscript: null,
         attempts: {
           gemini: { success: false, error: detection.error, latencyMs: detection.latencyMs },
         },
@@ -655,71 +667,44 @@ app.post('/api/intake/transcribe', async (req: Request, res: Response) => {
     }
   }
 
-  res.json({ success: true, gainNormalizationApplied, detectedLanguage, ...summary });
-});
-
-// Patient Intake: structured intent extraction from the ASR transcript. On a
-// second turn (after a low-confidence follow-up), previousFields carries
-// what was already captured so the model merges rather than starts over.
-app.post('/api/intake/extract', async (req: Request, res: Response) => {
-  const { transcript, language = 'en', previousFields } = req.body;
-
-  if (!transcript || !String(transcript).trim()) {
-    return res.status(400).json({ success: false, error: 'transcript is required.' });
+  if (!summary.primaryTranscript) {
+    return res.json({
+      success: true,
+      gainNormalizationApplied,
+      detectedLanguage,
+      transcript: null,
+      primaryProviderId: summary.primaryProviderId,
+      attempts: summary.attempts,
+    });
   }
 
-  const ai = getGeminiClient();
-  if (!ai) {
-    return res.status(400).json({
+  const reply = await getSabiLineReply(
+    Array.isArray(history) ? history : [],
+    summary.primaryTranscript,
+    resolvedLanguage,
+    Number(elapsedMinutes) || 0
+  );
+
+  if (!reply.success) {
+    return res.status(reply.quotaExceeded ? 429 : 500).json({
       success: false,
-      error: 'GEMINI_API_KEY is required for intake intent extraction.',
+      quotaExceeded: reply.quotaExceeded,
+      error: reply.error,
     });
   }
 
-  const previousFieldsBlock: string = previousFields
-    ? `\nFields already captured from an earlier turn in this same intake (keep these unless the transcript below clearly corrects one of them):\n${JSON.stringify(previousFields)}\n`
-    : '';
-
-  try {
-    const prompt = `You are a clinical front-desk intake assistant processing a spoken patient check-in for an African healthcare clinic. The patient's utterance was transcribed from ${language} speech and may include code-switching between languages.
-${previousFieldsBlock}
-Transcript to extract from:
-"${transcript}"
-
-Extract these six fields. Use null (not an empty string, not a guess) for anything not actually stated:
-- name
-- ageOrDob
-- paymentType (e.g. cash, NHIS/insurance, employer scheme — use the patient's own words)
-- reasonForVisit
-- symptomDuration
-- allergies
-
-For each field give a confidence from 0 to 1 reflecting how clearly the transcript states it (0 if null). Give an overallConfidence from 0 to 1 for the whole record. List any field names that are missing or unclear in missingOrUnclearFields. If overallConfidence is below 0.7, write ONE short, natural, spoken follow-up question (in ${language} if reasonably possible, otherwise English) that asks about the single most important missing/unclear field — prioritize reasonForVisit, then name, then paymentType — in followUpQuestion; otherwise set followUpQuestion to null.
-
-Return ONLY this JSON shape:
-{
-  "fields": { "name": string|null, "ageOrDob": string|null, "paymentType": string|null, "reasonForVisit": string|null, "symptomDuration": string|null, "allergies": string|null },
-  "confidencePerField": { "name": number, "ageOrDob": number, "paymentType": number, "reasonForVisit": number, "symptomDuration": number, "allergies": number },
-  "overallConfidence": number,
-  "missingOrUnclearFields": string[],
-  "followUpQuestion": string|null
-}`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: { responseMimeType: 'application/json' },
-    });
-
-    const parsed = JSON.parse(response.text || '{}');
-    return res.json({ success: true, ...parsed });
-  } catch (err: any) {
-    console.error('Intake extraction error:', err);
-    return res.status(500).json({
-      success: false,
-      error: `Intake extraction failed: ${err.message || 'Gemini error'}`,
-    });
-  }
+  res.json({
+    success: true,
+    gainNormalizationApplied,
+    detectedLanguage,
+    transcript: summary.primaryTranscript,
+    primaryProviderId: summary.primaryProviderId,
+    attempts: summary.attempts,
+    spokenReply: reply.spokenReply,
+    done: reply.done,
+    fields: reply.fields,
+    needsManualReview: reply.needsManualReview,
+  });
 });
 
 // 8. Reference data endpoint

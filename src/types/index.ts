@@ -1,6 +1,6 @@
 // Central Types for AfriVoice Studio & Sahara CodeSwitch Challenge
 
-export type LanguageCode = 'en' | 'fr' | 'zh' | 'hi' | 'es' | 'ig' | 'ha' | 'yo' | 'pcm';
+export type LanguageCode = 'en' | 'fr' | 'zh' | 'hi' | 'es' | 'ig' | 'ha' | 'yo' | 'pcm' | 'ful';
 
 export interface LanguageInfo {
   code: LanguageCode;
@@ -42,6 +42,16 @@ export const LANGUAGES: LanguageInfo[] = [
     region: 'Southwestern Nigeria, Benin, Togo',
     flag: '🇳🇬',
     description: 'Highly tonal language spoken by ~50 million people featuring distinctive tonal diacritics (acute, grave, macron).',
+    diacriticsSupported: true,
+  },
+  {
+    code: 'ful',
+    name: 'Fulfulde',
+    nativeName: 'Fulfulde',
+    african: true,
+    region: 'Sahel / West & Central Africa (Nigeria, Niger, Cameroon, Senegal)',
+    flag: '🇳🇬',
+    description: 'Language of the Fulani people, spoken by over 40 million people across the West African Sahel.',
     diacriticsSupported: true,
   },
   {
