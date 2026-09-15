@@ -886,25 +886,33 @@ async function startServer() {
   });
 }
 
-// Exported so the build can bundle this same Express app into api/index.js
-// for Vercel's Node serverless runtime (Vercel invokes the app directly
-// per-request instead of via a long-running listener). All routes above are
-// registered at module load time regardless of this export, so they're
-// already attached by the time an importer receives `app`.
+// Exported so `npm run build:api` can bundle this same Express app into
+// api/index.js for Vercel's Node serverless runtime (Vercel invokes the app
+// directly per-request instead of via a long-running listener). All routes
+// above are registered at module load time regardless of this export, so
+// they're already attached by the time an importer receives `app`.
 export default app;
 
 // Vercel sets VERCEL=1 in both its build and runtime environments. Only run
 // our own long-running server (Vite middleware in dev, static file serving
 // + app.listen in `npm start`) when NOT deployed on Vercel — its platform
-// serves the static build output directly and invokes the bundled
-// api/index.js as a serverless function per request instead. api/index.js
-// is generated at build time (esbuild bundles this file's whole dependency
-// graph into it) rather than checked in, because relying on Vercel's own
-// zero-config TS builder to trace and transpile a relative import reaching
-// outside `api/` (`../server`) silently produced a Lambda that imported the
-// raw, unbundled `server.ts` and crashed at runtime with
-// ERR_MODULE_NOT_FOUND — Node can't execute a .ts file directly. Bundling it
-// ourselves means Vercel just deploys an already-self-contained JS file.
+// serves the static build output directly and invokes api/index.js as a
+// serverless function per request instead.
+//
+// api/index.js is an esbuild bundle of this file's whole dependency graph,
+// and it is CHECKED IN, not just generated at build time. Both halves of
+// that are load-bearing:
+//  - Bundled, because Vercel's zero-config TS builder given a committed
+//    api/index.ts that imported `../server` deployed a Lambda that tried to
+//    load the raw, unbundled server.ts and crashed with ERR_MODULE_NOT_FOUND.
+//  - Committed, because Vercel discovers serverless functions by scanning
+//    the api/ directory of the cloned repository *before* it runs our build
+//    command — a gitignored file that only exists after `npm run build`
+//    is invisible to that scan, so no function was deployed at all and
+//    every /api/* request 404'd at the platform edge.
+// The build regenerates it on every `npm run build`; re-run that (or
+// `npm run build:api`) and commit the result whenever server-side code
+// changes, or production silently keeps running the old bundle.
 if (!process.env.VERCEL) {
   startServer();
 }
