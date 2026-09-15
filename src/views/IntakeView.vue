@@ -682,6 +682,9 @@ async function handleSpeakClick() {
   --font-body: 'Work Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
 
+  display: block;
+  min-height: 100vh;
+  min-height: 100dvh;
   background: var(--ground);
   color: var(--ink);
   font-family: var(--font-body);
