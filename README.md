@@ -1,7 +1,11 @@
-# AfriVoice Studio
+# SabiLine
 
-A voice-generation and speech-model benchmarking platform for African languages, built around the
-**Sahara CodeSwitch Africa Challenge** and inspired by the **Intron AfriHealth MultiBench** project.
+A voice-based patient intake assistant for African clinics — the primary deliverable, and what the site's
+root URL shows by default. It's built on top of **AfriVoice Studio**, a voice-generation and speech-model
+benchmarking platform for African languages developed around the **Sahara CodeSwitch Africa Challenge** and
+inspired by the **Intron AfriHealth MultiBench** project; that broader studio (Voice Generator, Benchmark,
+Code-Switching Explorer, Methodology/Ethics/Impact) still lives in the app and stays reachable by appending
+`?studio=1` to the URL.
 
 ## Problem
 
@@ -13,24 +17,28 @@ transparent way to compare how well different speech models actually perform on 
 
 ## Solution
 
-- **Voice Generator** — turn text into real synthesized speech in 8 languages (English, French, Chinese,
-  Hindi, Spanish, Igbo, Hausa, Yoruba), with Hausa/Igbo/Yoruba treated as first-class languages with
-  dedicated native voices, plus multi-language batch generation and side-by-side audio comparison.
-- **Patient Voice Intake** — an open-ended spoken conversation with no language picker and no fixed
-  script: the first turn's audio goes to Gemini for combined language identification + transcription
-  (English, Nigerian Pidgin, Yoruba, Igbo, Hausa, or Fulfulde), then every turn's audio is also sent to
-  every other configured ASR provider (Sahara, the two custom benchmark endpoints) for comparison. Each
-  reply is generated live by Gemini as one more turn in the conversation — it asks about whatever it
-  doesn't have yet (name, age/DOB, payment type, reason for visit, symptom duration, allergies), in
-  whatever order feels natural, gently steering the caller back to health topics if the conversation
-  drifts off-topic for a few minutes, and the mic re-activates automatically after every reply so the
-  whole thing reads as one continuous call. Once Gemini signals the intake is actually complete, the
-  record is shown as JSON and queued in a local "front desk" list, honestly flagged for manual review
-  whenever fields are still missing or unclear. Once a phone number is captured, Gemini also picks a
-  clinic department and proposes a near-future appointment slot on the same turn it wraps up the intake —
-  and the front desk queue gets a "Send reminder call" button that places a real outbound call via Twilio
-  reminding the patient of that appointment, honestly reporting "not configured" when Twilio credentials
-  aren't set rather than faking a call.
+- **SabiLine Patient Voice Intake** (the default landing experience) — tap SPEAK and SabiLine greets the
+  caller and takes it from there: an open-ended spoken conversation with no language picker and no fixed
+  script. The very first turn's audio goes to Gemini for combined language identification + transcription
+  (English, Nigerian Pidgin, Yoruba, Igbo, Hausa, or Fulfulde) — after that, every turn's audio is also sent
+  to every other configured ASR provider (Sahara, the two custom benchmark endpoints) for comparison.
+  Recording stops on its own once the caller has clearly spoken and gone quiet, rather than needing a second
+  tap — an `AnalyserNode` reading of the live mic level, which also drives the wave animation around the
+  SPEAK button. Callers who'd rather not talk can tap "Prefer to type instead of talk?" and type every turn
+  instead; typed turns run through a lighter text-only Gemini call for language detection instead of the
+  audio pipeline. Each reply is generated live by Gemini as one more turn in the conversation — it asks
+  about whatever it doesn't have yet (name, age/DOB, phone number, payment type, reason for visit, symptom
+  duration, allergies), in whatever order feels natural, gently steering the caller back to health topics if
+  the conversation drifts off-topic for a few minutes. Once Gemini signals the intake is actually complete,
+  it also picks a clinic department and proposes a near-future appointment slot (once a phone number is on
+  file), and the record is saved to **My Visits**, a local per-browser visit history, honestly flagged for
+  manual review whenever fields are still missing or unclear. Each visit card has a "Send reminder call"
+  button that places a real outbound call via Twilio reminding the patient of that appointment, honestly
+  reporting "not configured" when Twilio credentials aren't set rather than faking a call.
+- **Voice Generator** (`?studio=1`) — turn text into real synthesized speech in 8 languages (English,
+  French, Chinese, Hindi, Spanish, Igbo, Hausa, Yoruba), with Hausa/Igbo/Yoruba treated as first-class
+  languages with dedicated native voices, plus multi-language batch generation and side-by-side audio
+  comparison.
 - **Speech Benchmark** — run Word Error Rate / Character Error Rate evaluation across three ASR model
   identities (Sahara, Model B, Model C) on a de-identified clinical audio sample set, with configurable
   text normalization and per-utterance error inspection.
@@ -88,8 +96,7 @@ npm run dev             # http://localhost:3000
 | Variable | Required for | Behavior when unset |
 |---|---|---|
 | `GEMINI_API_KEY` | Gemini TTS, translation, QA judge, and the real Gemini ASR benchmark provider (also synthesizes the reference audio every benchmark run evaluates against) | Those features return an explicit "not configured" error; the rest of the app keeps working. |
-| `SAHARA_TTS_API_KEY` | Intron Sahara native African TTS (Voice Generator) | Sahara option shows "not configured"; switch to Gemini or Device Speech instead. |
-| `SAHARA_STT_API_KEY` | Intron Sahara as a real ASR provider in the Benchmark tab | Sahara is honestly reported as "not configured" and excluded from benchmark averages. These are separate keys — configuring one does not configure the other. |
+| `SAHARA_API_KEY` | Intron Sahara native African TTS (Voice Generator) and as a real ASR provider in the Benchmark tab — one key powers both | Sahara options are honestly reported as "not configured" and excluded from benchmark averages; switch to Gemini or Device Speech in the Voice Generator instead. |
 | `MODEL_B_API_KEY` + `MODEL_B_API_URL` / `MODEL_C_API_KEY` + `MODEL_C_API_URL` | Bring-your-own real ASR endpoint for the Benchmark tab (no vendor assumed) | Reported as "not configured" and excluded from benchmark averages. |
 | `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` + `TWILIO_FROM_NUMBER` | Placing the post-intake appointment reminder call | The "Send reminder call" button reports "not configured" instead of placing a call. |
 
@@ -146,3 +153,7 @@ statement, including the explicit acknowledgment that this tool does not provide
   turn (plus one for language detection on the first turn) rather than the 2-3 calls a fixed-question flow
   would use — a single intake call can use up a meaningful share of that model's 20-requests/day free-tier
   cap. Enabling billing on the Gemini API key removes this ceiling.
+- The auto-stop-on-silence recording (so the caller never has to tap twice) uses a fixed mic-level threshold
+  tuned for a typical laptop/phone mic in a moderately quiet room — a very noisy environment can either cut
+  a caller off early or (with the 20-second safety cap) delay the cutoff; "Prefer to type instead" always
+  works regardless of ambient noise.

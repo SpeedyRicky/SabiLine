@@ -8,7 +8,7 @@ vi.mock('@google/genai', () => ({
   })),
 }));
 
-import { detectLanguageAndTranscribe } from './detectLanguage';
+import { detectLanguageAndTranscribe, detectLanguageFromText } from './detectLanguage';
 
 const savedKey = process.env.GEMINI_API_KEY;
 
@@ -72,6 +72,73 @@ describe('detectLanguageAndTranscribe with a configured key', () => {
     mockGenerateContent.mockRejectedValueOnce(new Error('429 RESOURCE_EXHAUSTED: quota exceeded'));
 
     const result = await detectLanguageAndTranscribe('base64audio', 'audio/wav');
+    expect(result.success).toBe(false);
+    expect(result.quotaExceeded).toBe(true);
+  });
+
+  it('recognizes Fulfulde as a detectable language', async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      text: JSON.stringify({ languageCode: 'ful', transcript: 'Jam waali' }),
+    });
+
+    const result = await detectLanguageAndTranscribe('base64audio', 'audio/wav');
+    expect(result.success).toBe(true);
+    expect(result.languageCode).toBe('ful');
+  });
+});
+
+describe('detectLanguageFromText without a configured key', () => {
+  beforeEach(() => {
+    delete process.env.GEMINI_API_KEY;
+  });
+
+  it('fails honestly without a network call when GEMINI_API_KEY is unset', async () => {
+    const result = await detectLanguageFromText('Hello, my name is Amina');
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/GEMINI_API_KEY/);
+  });
+});
+
+describe('detectLanguageFromText with a configured key', () => {
+  beforeEach(() => {
+    process.env.GEMINI_API_KEY = 'fake-key-for-test';
+    mockGenerateContent.mockReset();
+  });
+
+  it('returns the detected language for typed text', async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      text: JSON.stringify({ languageCode: 'ha' }),
+    });
+
+    const result = await detectLanguageFromText('Sunana Amina');
+    expect(result.success).toBe(true);
+    expect(result.languageCode).toBe('ha');
+  });
+
+  it('recognizes Fulfulde from typed text', async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      text: JSON.stringify({ languageCode: 'ful' }),
+    });
+
+    const result = await detectLanguageFromText('Jam waali');
+    expect(result.success).toBe(true);
+    expect(result.languageCode).toBe('ful');
+  });
+
+  it('falls back to English when the model returns an unsupported language code', async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      text: JSON.stringify({ languageCode: 'fr' }),
+    });
+
+    const result = await detectLanguageFromText('Bonjour');
+    expect(result.success).toBe(true);
+    expect(result.languageCode).toBe('en');
+  });
+
+  it('flags a 429 RESOURCE_EXHAUSTED failure as quotaExceeded', async () => {
+    mockGenerateContent.mockRejectedValueOnce(new Error('429 RESOURCE_EXHAUSTED: quota exceeded'));
+
+    const result = await detectLanguageFromText('hello');
     expect(result.success).toBe(false);
     expect(result.quotaExceeded).toBe(true);
   });

@@ -3,7 +3,7 @@ import { transcribeWithAllProviders, LIVE_ASR_PRIORITY } from './transcribeLive'
 
 const ENV_KEYS = [
   'GEMINI_API_KEY',
-  'SAHARA_STT_API_KEY',
+  'SAHARA_API_KEY',
   'MODEL_B_API_KEY',
   'MODEL_B_API_URL',
   'MODEL_C_API_KEY',
@@ -56,7 +56,7 @@ describe('transcribeWithAllProviders', () => {
   });
 
   it('prefers Sahara over the benchmark endpoints and Gemini when all three succeed', async () => {
-    process.env.SAHARA_STT_API_KEY = 'fake-key';
+    process.env.SAHARA_API_KEY = 'fake-key';
     process.env.MODEL_B_API_KEY = 'fake-key';
     process.env.MODEL_B_API_URL = 'https://example.com/model-b';
     process.env.GEMINI_API_KEY = 'fake-key';
@@ -78,7 +78,7 @@ describe('transcribeWithAllProviders', () => {
   });
 
   it('falls through to the next provider by priority when the preferred one fails', async () => {
-    process.env.SAHARA_STT_API_KEY = 'fake-key';
+    process.env.SAHARA_API_KEY = 'fake-key';
     process.env.MODEL_B_API_KEY = 'fake-key';
     process.env.MODEL_B_API_URL = 'https://example.com/model-b';
 
