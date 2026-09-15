@@ -61,6 +61,7 @@ export interface IntakeConverseResponse {
   error?: string;
   quotaExceeded?: boolean;
   notConfigured?: boolean;
+  timedOut?: boolean;
 }
 
 export interface IntakeRecord {

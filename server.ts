@@ -647,6 +647,7 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
         success: false,
         quotaExceeded: reply.quotaExceeded,
         notConfigured: reply.notConfigured,
+        timedOut: reply.timedOut,
         error: reply.error,
       });
     }
@@ -679,6 +680,7 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
           transcript: null,
           quotaExceeded: detection.quotaExceeded,
           notConfigured: detection.notConfigured,
+          timedOut: detection.timedOut,
           error: detection.error,
         });
       }
@@ -698,6 +700,7 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
         success: false,
         quotaExceeded: reply.quotaExceeded,
         notConfigured: reply.notConfigured,
+        timedOut: reply.timedOut,
         error: reply.error,
       });
     }
@@ -751,6 +754,7 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
         primaryProviderId: null,
         quotaExceeded: detection.quotaExceeded,
         notConfigured: detection.notConfigured,
+        timedOut: detection.timedOut,
         attempts: {
           gemini: { success: false, error: detection.error, latencyMs: detection.latencyMs },
         },
@@ -795,6 +799,7 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
       success: false,
       quotaExceeded: reply.quotaExceeded,
       notConfigured: reply.notConfigured,
+      timedOut: reply.timedOut,
       error: reply.error,
     });
   }

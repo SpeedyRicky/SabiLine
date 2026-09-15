@@ -85,6 +85,20 @@ describe('detectLanguageAndTranscribe with a configured key', () => {
     expect(result.success).toBe(true);
     expect(result.languageCode).toBe('ful');
   });
+
+  it('flags timedOut and fails fast when Gemini hangs past the platform-safe budget', async () => {
+    vi.useFakeTimers();
+    try {
+      mockGenerateContent.mockReturnValueOnce(new Promise(() => {})); // never resolves
+      const resultPromise = detectLanguageAndTranscribe('base64audio', 'audio/wav');
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      expect(result.success).toBe(false);
+      expect(result.timedOut).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('detectLanguageFromText without a configured key', () => {

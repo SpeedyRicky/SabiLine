@@ -138,6 +138,20 @@ describe('getSabiLineReply with a configured key', () => {
     expect(result.quotaExceeded).toBe(true);
   });
 
+  it('flags timedOut and fails fast when Gemini hangs past the platform-safe budget', async () => {
+    vi.useFakeTimers();
+    try {
+      mockGenerateContent.mockReturnValueOnce(new Promise(() => {})); // never resolves
+      const resultPromise = getSabiLineReply([], 'hi', 'en', 0);
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      expect(result.success).toBe(false);
+      expect(result.timedOut).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('opens with a greeting when userText is null, without inventing a patient turn', async () => {
     mockGenerateContent.mockResolvedValueOnce({
       text: JSON.stringify({
