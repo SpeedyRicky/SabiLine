@@ -45,7 +45,9 @@ const turns = ref<IntakeConversationTurn[]>([]);
 const fields = ref<IntakeFields>({ ...EMPTY_FIELDS });
 const department = ref<string | null>(null);
 const appointmentSlot = ref<string | null>(null);
+const appointmentSlotIso = ref<string | null>(null);
 const needsManualReview = ref(false);
+const visitId = ref<string | null>(null);
 const finalRecord = ref<IntakeRecord | null>(null);
 const queue = ref<IntakeRecord[]>([]);
 
@@ -166,14 +168,17 @@ function resetForNewCall() {
   fields.value = { ...EMPTY_FIELDS };
   department.value = null;
   appointmentSlot.value = null;
+  appointmentSlotIso.value = null;
   needsManualReview.value = false;
   finalRecord.value = null;
+  visitId.value = null;
   showTypeRow.value = false;
   typedInput.value = '';
 }
 
 /** Shared tail end of every turn — speak the reply, then either wrap up the visit or listen for what's next. */
-async function handleSabiLineReply(data: IntakeConverseResponse) {
+async function handleSabiLineReply(data: IntakeConverseResponse & { visitId?: string }) {
+  if (data.visitId) visitId.value = data.visitId;
   const spokenReply = data.spokenReply;
   if (!spokenReply) {
     phase.value = 'idle';
@@ -185,6 +190,7 @@ async function handleSabiLineReply(data: IntakeConverseResponse) {
   if (data.fields) fields.value = { ...EMPTY_FIELDS, ...data.fields };
   if (data.department !== undefined) department.value = data.department;
   if (data.appointmentSlot !== undefined) appointmentSlot.value = data.appointmentSlot;
+  if (data.appointmentSlotIso !== undefined) appointmentSlotIso.value = data.appointmentSlotIso ?? null;
   caption.value = spokenReply;
 
   phase.value = 'speaking';
@@ -211,7 +217,7 @@ async function startCall() {
     const res = await fetch('/api/intake/converse', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ startCall: true, history: [], elapsedMinutes: 0 }),
+      body: JSON.stringify({ startCall: true, history: [], elapsedMinutes: 0, visitId: visitId.value }),
     });
     const data: IntakeConverseResponse = await res.json();
 
@@ -388,6 +394,7 @@ async function sendVoiceTurn(audioBase64: string) {
         language: detectedLanguage.value ?? 'auto',
         history: turns.value,
         elapsedMinutes,
+        visitId: visitId.value,
       }),
     });
     const data: IntakeConverseResponse = await res.json();
@@ -451,6 +458,7 @@ async function submitTyped() {
         language: detectedLanguage.value ?? 'auto',
         history: historyBeforeThisTurn,
         elapsedMinutes,
+        visitId: visitId.value,
       }),
     });
     const data: IntakeConverseResponse = await res.json();
@@ -483,7 +491,7 @@ function finalizeVisit(reviewNeeded: boolean) {
   needsManualReview.value = reviewNeeded;
 
   const record: IntakeRecord = {
-    id: `INTAKE-${Date.now()}`,
+    id: visitId.value || `INTAKE-${Date.now()}`,
     referenceNumber: generateReferenceNumber(),
     createdAt: new Date().toISOString(),
     language: detectedLanguage.value ?? 'en',
@@ -491,6 +499,7 @@ function finalizeVisit(reviewNeeded: boolean) {
     fields: fields.value,
     department: department.value,
     appointmentSlot: appointmentSlot.value,
+    appointmentSlotIso: appointmentSlotIso.value,
     needsManualReview: reviewNeeded,
     primaryAsrProviderId: null,
     status: 'queued_for_review',
@@ -633,6 +642,9 @@ async function handleSpeakClick() {
               <span v-if="record.appointmentSlot" class="time">{{ record.appointmentSlot }}</span>
             </div>
 
+            <div v-if="record.fields.phoneNumber && record.appointmentSlot" class="reminder-note">
+              SabiLine will also call automatically 2 days and 2 hours before this appointment.
+            </div>
             <div v-if="record.fields.phoneNumber" class="reminder-row">
               <button
                 class="type-toggle"

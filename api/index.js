@@ -1,6 +1,6 @@
 // server.ts
 import express from "express";
-import path from "path";
+import path2 from "path";
 import dotenv from "dotenv";
 import { Modality as Modality2 } from "@google/genai";
 
@@ -501,23 +501,32 @@ function nextSlots() {
   return [1, 2, 3].map((offsetDays) => {
     const d = /* @__PURE__ */ new Date();
     d.setDate(d.getDate() + offsetDays);
-    const hour = offsetDays % 2 === 0 ? "10:30am" : "2:15pm";
-    return `${days[d.getDay()]} ${months[d.getMonth()]} ${d.getDate()}, ${hour}`;
+    const hour = offsetDays % 2 === 0 ? 10 : 14;
+    const minute = offsetDays % 2 === 0 ? 30 : 15;
+    d.setHours(hour, minute, 0, 0);
+    const label = `${days[d.getDay()]} ${months[d.getMonth()]} ${d.getDate()}, ${offsetDays % 2 === 0 ? "10:30am" : "2:15pm"}`;
+    return { label, iso: d.toISOString() };
   });
 }
-function buildSystemInstruction(language, elapsedMinutes, isOpeningCall) {
+function findSlotIso(slotLabel, slots) {
+  if (!slotLabel) return null;
+  const match = slots.find((s) => s.label === slotLabel);
+  return match ? match.iso : null;
+}
+function buildSystemInstructionWithSlots(language, elapsedMinutes, isOpeningCall, slots) {
   const langName = LANGUAGE_NAMES[language] || language;
   const driftNote = elapsedMinutes >= 2 ? ` This call has been going for about ${elapsedMinutes} minute${elapsedMinutes === 1 ? "" : "s"} so far. If the conversation has drifted away from health or clinic topics and stayed off-topic for somewhere in the range of 2 to 7 minutes of that drift, gently mention \u2014 once, not every message \u2014 that you're the SabiLine health line and are best able to help with health-related concerns, then offer to get back to their visit. Don't cut off brief small talk; only redirect once it's clearly gone on a while.` : "";
   const openingNote = isOpeningCall ? " The call has just connected and the patient hasn't said anything yet \u2014 don't wait for them: open with a brief, warm greeting that introduces yourself as SabiLine and invites them to share why they're calling, in English (you don't know their language yet)." : "";
   return [
     "You are SabiLine, a warm, human-sounding intake receptionist at an African health clinic.",
     "Speak naturally like a real person: vary your wording, react to what the patient actually said, keep each reply short (1-2 sentences, occasionally 3) since it will be read aloud, and never repeat a question you already have an answer to." + openingNote,
-    `Respond in ${langName}, matching any code-switching the patient uses, without ever mentioning that you're doing this.`,
+    `Respond in ${langName} for "spokenReply" ONLY, matching any code-switching the patient uses, without ever mentioning that you're doing this.`,
     "Through natural back-and-forth, not a rigid checklist and not necessarily in this order, find out: the patient's name, their age or date of birth, a phone number to reach them on (explain it's so the clinic can call to remind them of their appointment), their payment or insurance type, their reason for visiting, how long their symptoms have lasted, and any known allergies. Ask about one thing at a time. If they don't know or decline to answer something, don't press repeatedly \u2014 move on and leave it blank.",
     "It's fine for the patient to chat about other things along the way \u2014 follow them naturally and don't refuse to engage." + driftNote,
-    `Once you have gathered what you reasonably can, pick the single best-fitting department for their reason for visit from this list: ${DEPARTMENTS.join(", ")} \u2014 then propose exactly one appointment time from these options: ${nextSlots().join(", ")}. If they want a different time, offer another option from that same list. Once they confirm a time, let them know their visit is logged and a staff member will follow up shortly, then say goodbye \u2014 set "done" to true only on that final message.`,
+    `Once you have gathered what you reasonably can, pick the single best-fitting department for their reason for visit from this list: ${DEPARTMENTS.join(", ")} \u2014 then propose exactly one appointment time from these options: ${slots.map((s) => s.label).join(", ")} (say it to the patient in ${langName}, but the "appointmentSlot" JSON field must be copied verbatim from that English list). If they want a different time, offer another option from that same list. Once they confirm a time, let them know their visit is logged and a staff member will follow up shortly, then say goodbye \u2014 set "done" to true only on that final message.`,
     'Always reply with ONLY this JSON: {"spokenReply": string, "done": boolean, "fields": {"name": string|null, "ageOrDob": string|null, "phoneNumber": string|null, "paymentType": string|null, "reasonForVisit": string|null, "symptomDuration": string|null, "allergies": string|null}, "department": string|null, "appointmentSlot": string|null, "needsManualReview": boolean}.',
-    '"fields" is your best current understanding so far, updated every turn \u2014 use null (never a guess) for anything the patient has not actually stated. "department" and "appointmentSlot" stay null until a time is actually confirmed. Set "needsManualReview" to true only once "done" is true and important fields are still missing or unclear.'
+    'CRITICAL: "spokenReply" is the only field spoken/shown to the patient and is the only field allowed to be in ' + langName + `. Every other field in the JSON \u2014 "fields" (name, ageOrDob, phoneNumber, paymentType, reasonForVisit, symptomDuration, allergies), "department", and "appointmentSlot" \u2014 MUST always be written in English regardless of what language the patient spoke, because clinic staff who read the record only read English. Translate the patient's answers into plain English for these fields (e.g. a Yoruba reason for visit like "Mo ni iba" must be recorded as "Fever"); never leave them in the original language.`,
+    '"fields" is your best current understanding so far, updated every turn \u2014 use null (never a guess) for anything the patient has not actually stated. "department" and "appointmentSlot" stay null until a time is actually confirmed, and "appointmentSlot" must exactly match one of the English options given above. Set "needsManualReview" to true only once "done" is true and important fields are still missing or unclear.'
   ].join(" ");
 }
 async function getSabiLineReply(history, userText, language, elapsedMinutes) {
@@ -526,6 +535,7 @@ async function getSabiLineReply(history, userText, language, elapsedMinutes) {
     return { success: false, notConfigured: true, error: "GEMINI_API_KEY is required for the conversational intake." };
   }
   const isOpeningCall = userText === null;
+  const slotsForThisTurn = nextSlots();
   try {
     const newTurnText = isOpeningCall ? "[The call has just connected.]" : userText;
     const contents = history.map((turn) => ({ role: turn.role, parts: [{ text: turn.text }] })).concat([{ role: "user", parts: [{ text: newTurnText }] }]);
@@ -535,7 +545,7 @@ async function getSabiLineReply(history, userText, language, elapsedMinutes) {
           model: "gemini-3.8-flash",
           contents,
           config: {
-            systemInstruction: buildSystemInstruction(language, elapsedMinutes, isOpeningCall),
+            systemInstruction: buildSystemInstructionWithSlots(language, elapsedMinutes, isOpeningCall, slotsForThisTurn),
             responseMimeType: "application/json"
           }
         })
@@ -554,6 +564,7 @@ async function getSabiLineReply(history, userText, language, elapsedMinutes) {
       fields: parsed.fields,
       department: parsed.department ?? null,
       appointmentSlot: parsed.appointmentSlot ?? null,
+      appointmentSlotIso: findSlotIso(parsed.appointmentSlot, slotsForThisTurn),
       needsManualReview: Boolean(parsed.needsManualReview)
     };
   } catch (err) {
@@ -615,6 +626,171 @@ async function placeReminderCall(toNumber, message) {
     };
   }
 }
+
+// src/services/reminder/reminderScheduler.ts
+import fs from "node:fs";
+import path from "node:path";
+var TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1e3;
+var TWO_HOURS_MS = 2 * 60 * 60 * 1e3;
+var MAX_TIMEOUT_MS = 2 ** 31 - 1;
+var DATA_DIR = path.join(process.cwd(), "data");
+var STORE_FILE = path.join(DATA_DIR, "scheduled-reminders.json");
+var activeTimers = /* @__PURE__ */ new Map();
+function loadStore() {
+  try {
+    if (!fs.existsSync(STORE_FILE)) return [];
+    return JSON.parse(fs.readFileSync(STORE_FILE, "utf-8"));
+  } catch {
+    return [];
+  }
+}
+function saveStore(reminders) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(STORE_FILE, JSON.stringify(reminders, null, 2));
+  } catch {
+  }
+}
+function upsert(reminder) {
+  const all = loadStore();
+  const idx = all.findIndex((r) => r.id === reminder.id);
+  if (idx >= 0) all[idx] = reminder;
+  else all.push(reminder);
+  saveStore(all);
+}
+async function fireReminder(reminder) {
+  activeTimers.delete(reminder.id);
+  if (!isTwilioConfigured()) {
+    upsert({ ...reminder, firedAt: (/* @__PURE__ */ new Date()).toISOString(), result: "failed", error: "Twilio not configured." });
+    return;
+  }
+  const when = reminder.kind === "2-day" ? "in about 2 days" : "in about 2 hours";
+  const departmentPart = reminder.department ? ` at ${reminder.department}` : "";
+  const slotPart = reminder.appointmentSlot ? ` on ${reminder.appointmentSlot}` : "";
+  const message = `Hello, this is a reminder from SabiLine. Your appointment${departmentPart}${slotPart} is coming up ${when}. Please arrive a few minutes early. Thank you.`;
+  const result = await placeReminderCall(reminder.phoneNumber, message);
+  upsert({
+    ...reminder,
+    firedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    result: result.success ? "sent" : "failed",
+    error: result.error
+  });
+}
+function scheduleTimer(reminder) {
+  const delayMs = new Date(reminder.fireAtIso).getTime() - Date.now();
+  if (delayMs <= 0) {
+    upsert({ ...reminder, firedAt: (/* @__PURE__ */ new Date()).toISOString(), result: "skipped-past", error: "Fire time already passed." });
+    return;
+  }
+  if (delayMs > MAX_TIMEOUT_MS) {
+    return;
+  }
+  const timer = setTimeout(() => {
+    void fireReminder(reminder);
+  }, delayMs);
+  activeTimers.set(reminder.id, timer);
+}
+function scheduleAppointmentReminders(params) {
+  const { visitId, phoneNumber, department, appointmentSlot, appointmentSlotIso } = params;
+  if (!phoneNumber) return { scheduled: false, reason: "No phone number on file." };
+  if (!appointmentSlotIso) return { scheduled: false, reason: "No confirmed appointment timestamp." };
+  const apptTime = new Date(appointmentSlotIso).getTime();
+  if (Number.isNaN(apptTime)) return { scheduled: false, reason: "Appointment timestamp could not be parsed." };
+  const candidates = [
+    { kind: "2-day", fireAt: apptTime - TWO_DAYS_MS },
+    { kind: "2-hour", fireAt: apptTime - TWO_HOURS_MS }
+  ];
+  for (const { kind, fireAt } of candidates) {
+    if (fireAt <= Date.now()) continue;
+    const reminder = {
+      id: `${visitId}:${kind}`,
+      phoneNumber,
+      department,
+      appointmentSlot,
+      appointmentSlotIso,
+      kind,
+      fireAtIso: new Date(fireAt).toISOString()
+    };
+    upsert(reminder);
+    scheduleTimer(reminder);
+  }
+  return { scheduled: true };
+}
+function rehydratePendingReminders() {
+  const all = loadStore();
+  for (const reminder of all) {
+    if (reminder.firedAt) continue;
+    scheduleTimer(reminder);
+  }
+}
+async function runDueReminders() {
+  const all = loadStore();
+  const due = all.filter((r) => !r.firedAt && new Date(r.fireAtIso).getTime() <= Date.now());
+  for (const reminder of due) {
+    await fireReminder(reminder);
+  }
+  return { fired: due.length };
+}
+function listScheduledReminders() {
+  return loadStore();
+}
+
+// src/services/notify/staffNotify.ts
+var LANGUAGE_NAMES2 = {
+  en: "English",
+  pcm: "Nigerian Pidgin",
+  yo: "Yoruba",
+  ig: "Igbo",
+  ha: "Hausa",
+  ful: "Fulfulde"
+};
+function buildEnglishVisitSummary(params) {
+  const { referenceNumber, language, fields, department, appointmentSlot, needsManualReview } = params;
+  const langName = LANGUAGE_NAMES2[language] || language;
+  const lines = [
+    `New SabiLine patient intake \u2014 ${referenceNumber}`,
+    `Conversation language: ${langName} (recorded here in English)`,
+    `Name: ${fields.name || "not provided"}`,
+    `Age / DOB: ${fields.ageOrDob || "not provided"}`,
+    `Phone number: ${fields.phoneNumber || "not provided"}`,
+    `Payment / insurance: ${fields.paymentType || "not provided"}`,
+    `Reason for visit: ${fields.reasonForVisit || "not provided"}`,
+    `Symptom duration: ${fields.symptomDuration || "not provided"}`,
+    `Allergies: ${fields.allergies || "not provided"}`,
+    `Department: ${department || "not yet assigned"}`,
+    `Proposed appointment: ${appointmentSlot || "not yet scheduled"}`
+  ];
+  if (needsManualReview) {
+    lines.push("\u26A0\uFE0F Flagged for manual review \u2014 one or more fields are missing or unclear.");
+  }
+  return lines.join("\n");
+}
+async function notifyStaffOfVisit(summary) {
+  const url = process.env.STAFF_NOTIFY_WEBHOOK_URL?.trim();
+  if (!url) {
+    return { success: false, notConfigured: true, error: "STAFF_NOTIFY_WEBHOOK_URL is not configured." };
+  }
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: summary, content: summary })
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      throw new Error(`Staff notification webhook returned status ${response.status}. ${errText}`.trim());
+    }
+    return { success: true };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "Sending the staff notification failed."
+    };
+  }
+}
+
+// server.ts
+import { randomUUID } from "crypto";
 
 // src/services/benchmark/normalization.ts
 var DEFAULT_OPTIONS = {
@@ -1890,6 +2066,25 @@ app.post("/api/benchmark/run", asyncHandler(async (req, res) => {
     }
   });
 }));
+function finalizeIntakeIfDone(visitId, language, reply) {
+  if (!reply.success || !reply.done || !reply.fields) return;
+  const summary = buildEnglishVisitSummary({
+    referenceNumber: visitId,
+    language,
+    fields: reply.fields,
+    department: reply.department ?? null,
+    appointmentSlot: reply.appointmentSlot ?? null,
+    needsManualReview: Boolean(reply.needsManualReview)
+  });
+  void notifyStaffOfVisit(summary);
+  scheduleAppointmentReminders({
+    visitId,
+    phoneNumber: reply.fields.phoneNumber ?? null,
+    department: reply.department ?? null,
+    appointmentSlot: reply.appointmentSlot ?? null,
+    appointmentSlotIso: reply.appointmentSlotIso ?? null
+  });
+}
 app.post("/api/intake/converse", asyncHandler(async (req, res) => {
   const {
     audioBase64,
@@ -1897,10 +2092,12 @@ app.post("/api/intake/converse", asyncHandler(async (req, res) => {
     startCall,
     mimeType = "audio/wav",
     language = "auto",
+    visitId,
     history = [],
     elapsedMinutes = 0,
     selectedModels
   } = req.body;
+  const resolvedVisitId = typeof visitId === "string" && visitId ? visitId : randomUUID();
   if (startCall === true) {
     const reply2 = await getSabiLineReply(Array.isArray(history) ? history : [], null, "en", 0);
     if (!reply2.success) {
@@ -1912,13 +2109,16 @@ app.post("/api/intake/converse", asyncHandler(async (req, res) => {
         error: reply2.error
       });
     }
+    finalizeIntakeIfDone(resolvedVisitId, "en", reply2);
     return res.json({
       success: true,
+      visitId: resolvedVisitId,
       spokenReply: reply2.spokenReply,
       done: reply2.done,
       fields: reply2.fields,
       department: reply2.department,
       appointmentSlot: reply2.appointmentSlot,
+      appointmentSlotIso: reply2.appointmentSlotIso,
       needsManualReview: reply2.needsManualReview
     });
   }
@@ -1957,8 +2157,10 @@ app.post("/api/intake/converse", asyncHandler(async (req, res) => {
         error: reply2.error
       });
     }
+    finalizeIntakeIfDone(resolvedVisitId, resolvedLanguage2, reply2);
     return res.json({
       success: true,
+      visitId: resolvedVisitId,
       detectedLanguage: detectedLanguage2,
       transcript: typedText,
       primaryProviderId: null,
@@ -1968,6 +2170,7 @@ app.post("/api/intake/converse", asyncHandler(async (req, res) => {
       fields: reply2.fields,
       department: reply2.department,
       appointmentSlot: reply2.appointmentSlot,
+      appointmentSlotIso: reply2.appointmentSlotIso,
       needsManualReview: reply2.needsManualReview
     });
   }
@@ -2044,8 +2247,10 @@ app.post("/api/intake/converse", asyncHandler(async (req, res) => {
       error: reply.error
     });
   }
+  finalizeIntakeIfDone(resolvedVisitId, resolvedLanguage, reply);
   res.json({
     success: true,
+    visitId: resolvedVisitId,
     gainNormalizationApplied,
     detectedLanguage,
     transcript: summary.primaryTranscript,
@@ -2056,6 +2261,7 @@ app.post("/api/intake/converse", asyncHandler(async (req, res) => {
     fields: reply.fields,
     department: reply.department,
     appointmentSlot: reply.appointmentSlot,
+    appointmentSlotIso: reply.appointmentSlotIso,
     needsManualReview: reply.needsManualReview
   });
 }));
@@ -2077,6 +2283,13 @@ app.post("/api/intake/remind", asyncHandler(async (req, res) => {
   const result = await placeReminderCall(phoneNumber, message);
   res.json(result);
 }));
+app.post("/api/intake/reminders/run-due", asyncHandler(async (_req, res) => {
+  const result = await runDueReminders();
+  res.json({ success: true, ...result });
+}));
+app.get("/api/intake/reminders", (_req, res) => {
+  res.json({ success: true, reminders: listScheduledReminders() });
+});
 app.get("/api/benchmark/reference", (req, res) => {
   res.json({
     success: true,
@@ -2099,12 +2312,13 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    const distPath = path2.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      res.sendFile(path2.join(distPath, "index.html"));
     });
   }
+  rehydratePendingReminders();
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`AfriVoice Studio Server running on http://0.0.0.0:${PORT}`);
   });

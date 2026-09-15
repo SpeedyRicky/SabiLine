@@ -57,6 +57,7 @@ export interface IntakeConverseResponse {
   fields?: IntakeFields;
   department?: string | null;
   appointmentSlot?: string | null;
+  appointmentSlotIso?: string | null;
   needsManualReview?: boolean;
   error?: string;
   quotaExceeded?: boolean;
@@ -73,6 +74,7 @@ export interface IntakeRecord {
   fields: IntakeFields;
   department: string | null;
   appointmentSlot: string | null;
+  appointmentSlotIso: string | null;
   needsManualReview: boolean;
   primaryAsrProviderId: string | null;
   status: 'queued_for_review';

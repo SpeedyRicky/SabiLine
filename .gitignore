@@ -7,3 +7,6 @@ coverage/
 .env*
 !.env.example
 *.tsbuildinfo
+# Local persistence for scheduled Twilio appointment reminders (see
+# src/services/reminder/reminderScheduler.ts) — never committed.
+data/
