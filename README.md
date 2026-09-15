@@ -157,3 +157,10 @@ statement, including the explicit acknowledgment that this tool does not provide
   tuned for a typical laptop/phone mic in a moderately quiet room — a very noisy environment can either cut
   a caller off early or (with the 20-second safety cap) delay the cutoff; "Prefer to type instead" always
   works regardless of ambient noise.
+- Gemini occasionally returns a transient `503 UNAVAILABLE` ("model is currently experiencing high demand")
+  that clears up within a second or two; every Gemini call in the intake flow retries that specific failure
+  up to twice with a short backoff before giving up (`withGeminiRetry` in `src/services/tts/geminiClient.ts`)
+  — a real quota exhaustion (`429`) is never retried, since retrying it wouldn't help. Every async route in
+  `server.ts` is also wrapped so an unexpected failure anywhere still returns one honest JSON error instead
+  of a hung or non-JSON response, and `vercel.json` sets `maxDuration: 30` on the serverless function so a
+  slower Gemini round-trip (occasionally 10-15s end to end) isn't killed by the platform's shorter default.

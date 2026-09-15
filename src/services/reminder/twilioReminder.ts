@@ -34,9 +34,9 @@ function escapeForTwiml(text: string): string {
  * endpoint is needed to answer the call.
  */
 export async function placeReminderCall(toNumber: string, message: string): Promise<ReminderCallResult> {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-  const fromNumber = process.env.TWILIO_FROM_NUMBER;
+  const accountSid = process.env.TWILIO_ACCOUNT_SID?.trim();
+  const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+  const fromNumber = process.env.TWILIO_FROM_NUMBER?.trim();
 
   if (!accountSid || !authToken || !fromNumber) {
     return {
