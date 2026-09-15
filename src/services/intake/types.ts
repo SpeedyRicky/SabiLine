@@ -7,6 +7,7 @@ import type { LanguageCode } from '../../types';
 export interface IntakeFields {
   name: string | null;
   ageOrDob: string | null;
+  phoneNumber: string | null;
   paymentType: string | null;
   reasonForVisit: string | null;
   symptomDuration: string | null;
@@ -16,6 +17,7 @@ export interface IntakeFields {
 export const INTAKE_FIELD_LABELS: Record<keyof IntakeFields, string> = {
   name: 'Name',
   ageOrDob: 'Age / Date of birth',
+  phoneNumber: 'Phone number',
   paymentType: 'Payment / insurance type',
   reasonForVisit: 'Reason for visit',
   symptomDuration: 'Symptom duration',
@@ -53,6 +55,8 @@ export interface IntakeConverseResponse {
   spokenReply?: string;
   done?: boolean;
   fields?: IntakeFields;
+  department?: string | null;
+  appointmentSlot?: string | null;
   needsManualReview?: boolean;
   error?: string;
   quotaExceeded?: boolean;
@@ -65,6 +69,8 @@ export interface IntakeRecord {
   language: LanguageCode;
   conversation: IntakeConversationTurn[];
   fields: IntakeFields;
+  department: string | null;
+  appointmentSlot: string | null;
   needsManualReview: boolean;
   primaryAsrProviderId: string | null;
   status: 'queued_for_review';

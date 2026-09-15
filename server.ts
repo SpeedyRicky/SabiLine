@@ -9,6 +9,7 @@ import { ASR_PROVIDER_REGISTRY, DEFAULT_BENCHMARK_MODELS } from './src/services/
 import { transcribeWithAllProviders, LIVE_ASR_PRIORITY } from './src/services/asr/transcribeLive';
 import { detectLanguageAndTranscribe } from './src/services/asr/detectLanguage';
 import { getSabiLineReply } from './src/services/intake/converse';
+import { isTwilioConfigured, placeReminderCall } from './src/services/reminder/twilioReminder';
 import { normalizeQuietAudio } from './src/services/asr/audioPreprocess';
 import { calculateWER } from './src/services/benchmark/wer';
 import { calculateCER } from './src/services/benchmark/cer';
@@ -704,8 +705,37 @@ app.post('/api/intake/converse', async (req: Request, res: Response) => {
     spokenReply: reply.spokenReply,
     done: reply.done,
     fields: reply.fields,
+    department: reply.department,
+    appointmentSlot: reply.appointmentSlot,
     needsManualReview: reply.needsManualReview,
   });
+});
+
+// Places a real outbound call reminding the patient of their appointment.
+// Honestly reports "not configured" when no Twilio credentials are set,
+// mirroring how every other optional provider in this app behaves —
+// nothing is faked as sent.
+app.post('/api/intake/remind', async (req: Request, res: Response) => {
+  const { phoneNumber, department, appointmentSlot } = req.body;
+
+  if (!phoneNumber || typeof phoneNumber !== 'string') {
+    return res.status(400).json({ success: false, error: 'phoneNumber is required.' });
+  }
+
+  if (!isTwilioConfigured()) {
+    return res.json({
+      success: false,
+      notConfigured: true,
+      error: 'TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER are not all set, so no reminder call can be placed.',
+    });
+  }
+
+  const departmentPart = department ? ` at ${department}` : '';
+  const slotPart = appointmentSlot ? ` on ${appointmentSlot}` : '';
+  const message = `Hello, this is a reminder from SabiLine about your upcoming appointment${departmentPart}${slotPart}. Please arrive a few minutes early. Thank you, and see you soon.`;
+
+  const result = await placeReminderCall(phoneNumber, message);
+  res.json(result);
 });
 
 // 8. Reference data endpoint
