@@ -6,4 +6,15 @@
     color: #0f172a;
     background-color: #f8fafc;
   }
+
+  /* The default (non-studio) landing is SabiLine's own dark-mode-aware
+     card UI (see .sabiline-intake in IntakeView.vue) — this keeps the
+     page's very first paint, before Vue has even mounted, already in the
+     right mode instead of flashing light and then jumping to dark. */
+  @media (prefers-color-scheme: dark) {
+    body {
+      color: #f7f0dc;
+      background-color: #1c170d;
+    }
+  }
 }
