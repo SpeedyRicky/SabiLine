@@ -46,6 +46,50 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Distinguishable from a generic Gemini failure so callers can show "please
+// try again" instead of a raw error, and so the flag survives to the client.
+export class GeminiTimeoutError extends Error {
+  constructor(message = 'Gemini took too long to respond.') {
+    super(message);
+    this.name = 'GeminiTimeoutError';
+  }
+}
+
+/**
+ * Vercel kills a serverless function once it hits the platform's execution
+ * limit — and when it does, the response is the *platform's* HTML/plain-text
+ * error page, not anything our Express code gets a chance to produce, so
+ * even the asyncHandler wrapper in server.ts can't turn it into clean JSON.
+ * Gemini has been observed taking 15+ seconds on a slow-but-otherwise-fine
+ * call, which is enough to hit that limit on its own, with no error to
+ * retry. Racing every call against a timeout comfortably under the
+ * platform's cap means OUR code is always the one that responds, in valid
+ * JSON, before the platform can step in.
+ */
+export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new GeminiTimeoutError()), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+export function isTimeoutError(err: unknown): boolean {
+  return err instanceof GeminiTimeoutError;
+}
+
+// Kept comfortably under Vercel's default 10s serverless function limit,
+// leaving headroom for cold start and our own request/response handling.
+export const GEMINI_CALL_TIMEOUT_MS = 8000;
+
 /**
  * Runs a Gemini call, retrying up to `maxRetries` times (with a short delay)
  * only when the failure looks like Google's own transient overload — any

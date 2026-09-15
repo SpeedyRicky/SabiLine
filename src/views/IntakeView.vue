@@ -134,15 +134,23 @@ const speakDisabled = computed(() =>
 
 // Picks the most accurate notice for a failed turn: a real misconfiguration
 // (a required API key missing on this deployment) is a different problem
-// from a temporary quota limit, which is different again from anything
-// else — showing the generic fallback for all three would leave whoever's
-// debugging this guessing at the actual cause.
-function failureNotice(data: Pick<IntakeConverseResponse, 'quotaExceeded' | 'notConfigured'>, quotaMessage: string, fallback: string): string {
+// from a temporary quota limit, which is different again from a slow
+// response that ran out the platform's execution budget, which is different
+// again from anything else — showing the generic fallback for all of these
+// would leave whoever's debugging this guessing at the actual cause.
+function failureNotice(
+  data: Pick<IntakeConverseResponse, 'quotaExceeded' | 'notConfigured' | 'timedOut'>,
+  quotaMessage: string,
+  fallback: string
+): string {
   if (data.notConfigured) {
     return "SabiLine isn&rsquo;t fully set up on this deployment yet &mdash; a required API key is missing. Please let the site owner know.";
   }
   if (data.quotaExceeded) {
     return quotaMessage;
+  }
+  if (data.timedOut) {
+    return 'That took longer than expected to answer. Please try again.';
   }
   return fallback;
 }

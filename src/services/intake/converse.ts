@@ -1,4 +1,11 @@
-import { getGeminiClient, isQuotaExceededError, withGeminiRetry } from '../tts/geminiClient';
+import {
+  getGeminiClient,
+  isQuotaExceededError,
+  isTimeoutError,
+  withGeminiRetry,
+  withTimeout,
+  GEMINI_CALL_TIMEOUT_MS,
+} from '../tts/geminiClient';
 import type { LanguageCode } from '../../types';
 import type { IntakeFields, IntakeConversationTurn } from './types';
 
@@ -46,6 +53,7 @@ export interface ConverseResult {
   error?: string;
   quotaExceeded?: boolean;
   notConfigured?: boolean;
+  timedOut?: boolean;
 }
 
 // Gemini has no innate sense of elapsed time — each call sees only what's in
@@ -107,15 +115,18 @@ export async function getSabiLineReply(
       .map((turn) => ({ role: turn.role, parts: [{ text: turn.text }] }))
       .concat([{ role: 'user' as const, parts: [{ text: newTurnText }] }]);
 
-    const response = await withGeminiRetry(() =>
-      ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents,
-        config: {
-          systemInstruction: buildSystemInstruction(language, elapsedMinutes, isOpeningCall),
-          responseMimeType: 'application/json',
-        },
-      })
+    const response = await withTimeout(
+      withGeminiRetry(() =>
+        ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents,
+          config: {
+            systemInstruction: buildSystemInstruction(language, elapsedMinutes, isOpeningCall),
+            responseMimeType: 'application/json',
+          },
+        })
+      ),
+      GEMINI_CALL_TIMEOUT_MS
     );
 
     const parsed = JSON.parse(response.text || '{}');
@@ -137,6 +148,7 @@ export async function getSabiLineReply(
     return {
       success: false,
       quotaExceeded: isQuotaExceededError(err),
+      timedOut: isTimeoutError(err),
       error: err instanceof Error ? err.message : 'Conversation turn failed.',
     };
   }

@@ -4,7 +4,7 @@ vi.mock('@google/genai', () => ({
   GoogleGenAI: vi.fn().mockImplementation((config: { apiKey: string }) => ({ apiKey: config.apiKey })),
 }));
 
-import { getGeminiClient, isQuotaExceededError, withGeminiRetry } from './geminiClient';
+import { getGeminiClient, isQuotaExceededError, isTimeoutError, withGeminiRetry, withTimeout } from './geminiClient';
 
 const savedKey = process.env.GEMINI_API_KEY;
 
@@ -90,5 +90,34 @@ describe('withGeminiRetry', () => {
     await vi.runAllTimersAsync();
     await expect(promise).rejects.toThrow(/UNAVAILABLE/);
     expect(fn).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('withTimeout', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('resolves with the wrapped value when it settles before the deadline', async () => {
+    const result = await withTimeout(Promise.resolve('done'), 8000);
+    expect(result).toBe('done');
+  });
+
+  it('rejects with a GeminiTimeoutError once the deadline passes, regardless of the underlying call', async () => {
+    const hanging = new Promise(() => {});
+    const promise = withTimeout(hanging, 8000);
+    promise.catch(() => {});
+    await vi.advanceTimersByTimeAsync(8000);
+    await expect(promise).rejects.toThrow(/took too long/);
+    const err = await promise.catch((e) => e);
+    expect(isTimeoutError(err)).toBe(true);
+  });
+
+  it('does not flag an ordinary error as a timeout', () => {
+    expect(isTimeoutError(new Error('429 RESOURCE_EXHAUSTED'))).toBe(false);
   });
 });

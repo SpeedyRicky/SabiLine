@@ -1,4 +1,11 @@
-import { getGeminiClient, isQuotaExceededError, withGeminiRetry } from '../tts/geminiClient';
+import {
+  getGeminiClient,
+  isQuotaExceededError,
+  isTimeoutError,
+  withGeminiRetry,
+  withTimeout,
+  GEMINI_CALL_TIMEOUT_MS,
+} from '../tts/geminiClient';
 import type { LanguageCode } from '../../types';
 
 export interface DetectLanguageResult {
@@ -8,6 +15,7 @@ export interface DetectLanguageResult {
   error?: string;
   quotaExceeded?: boolean;
   notConfigured?: boolean;
+  timedOut?: boolean;
   latencyMs: number;
 }
 
@@ -30,21 +38,24 @@ export async function detectLanguageAndTranscribe(audioBase64: string, mimeType:
   }
 
   try {
-    const response = await withGeminiRetry(() =>
-      ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: [
-          {
-            parts: [
-              {
-                text: `Listen to this audio of a patient speaking at a health clinic intake desk. First identify which language they are speaking, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. If none of those are a good match, still pick the closest one. Then transcribe exactly what they said, including any code-switching between languages. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful", "transcript": string}`,
-              },
-              { inlineData: { mimeType, data: audioBase64 } },
-            ],
-          },
-        ],
-        config: { responseMimeType: 'application/json' },
-      })
+    const response = await withTimeout(
+      withGeminiRetry(() =>
+        ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: [
+            {
+              parts: [
+                {
+                  text: `Listen to this audio of a patient speaking at a health clinic intake desk. First identify which language they are speaking, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. If none of those are a good match, still pick the closest one. Then transcribe exactly what they said, including any code-switching between languages. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful", "transcript": string}`,
+                },
+                { inlineData: { mimeType, data: audioBase64 } },
+              ],
+            },
+          ],
+          config: { responseMimeType: 'application/json' },
+        })
+      ),
+      GEMINI_CALL_TIMEOUT_MS
     );
 
     const parsed = JSON.parse(response.text || '{}');
@@ -60,6 +71,7 @@ export async function detectLanguageAndTranscribe(audioBase64: string, mimeType:
     return {
       success: false,
       quotaExceeded: isQuotaExceededError(err),
+      timedOut: isTimeoutError(err),
       error: err instanceof Error ? err.message : 'Language detection failed.',
       latencyMs: Date.now() - start,
     };
@@ -72,6 +84,7 @@ export interface DetectLanguageFromTextResult {
   error?: string;
   quotaExceeded?: boolean;
   notConfigured?: boolean;
+  timedOut?: boolean;
   latencyMs: number;
 }
 
@@ -89,20 +102,23 @@ export async function detectLanguageFromText(text: string): Promise<DetectLangua
   }
 
   try {
-    const response = await withGeminiRetry(() =>
-      ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: [
-          {
-            parts: [
-              {
-                text: `A patient typed this at a health clinic intake desk: "${text.replace(/"/g, "'")}". Identify which language they most likely intended, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful"}`,
-              },
-            ],
-          },
-        ],
-        config: { responseMimeType: 'application/json' },
-      })
+    const response = await withTimeout(
+      withGeminiRetry(() =>
+        ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: [
+            {
+              parts: [
+                {
+                  text: `A patient typed this at a health clinic intake desk: "${text.replace(/"/g, "'")}". Identify which language they most likely intended, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful"}`,
+                },
+              ],
+            },
+          ],
+          config: { responseMimeType: 'application/json' },
+        })
+      ),
+      GEMINI_CALL_TIMEOUT_MS
     );
 
     const parsed = JSON.parse(response.text || '{}');
@@ -113,6 +129,7 @@ export async function detectLanguageFromText(text: string): Promise<DetectLangua
     return {
       success: false,
       quotaExceeded: isQuotaExceededError(err),
+      timedOut: isTimeoutError(err),
       error: err instanceof Error ? err.message : 'Language detection failed.',
       latencyMs: Date.now() - start,
     };
