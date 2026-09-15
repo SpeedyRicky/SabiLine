@@ -1,22 +1,28 @@
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue';
-import Navbar from './components/Navbar.vue';
+import { ref, watch, onMounted, defineAsyncComponent } from 'vue';
 import type { NavTab } from './components/navTabs';
-import HomeView from './views/HomeView.vue';
-import VoiceGeneratorView from './views/VoiceGeneratorView.vue';
 import IntakeView from './views/IntakeView.vue';
-import ResultsView from './views/ResultsView.vue';
-import BenchmarkView from './views/BenchmarkView.vue';
-import CodeSwitchView from './views/CodeSwitchView.vue';
-import MethodologyView from './views/MethodologyView.vue';
-import ImpactView from './views/ImpactView.vue';
-import EthicsView from './views/EthicsView.vue';
 import AppErrorBoundary from './components/AppErrorBoundary.vue';
 import DiagnosticsPanel from './components/DiagnosticsPanel.vue';
 import { Volume2, ShieldCheck } from 'lucide-vue-next';
 import type { SavedResultItem, ProviderCapability } from './types';
 import { PROVIDER_CAPABILITIES } from './services/tts/voices';
 import { logError } from './utils/diagnostics';
+
+// The default (non-studio) landing is only ever IntakeView — every visitor
+// downloads it, so it stays a static import. Everything below is only
+// reachable via ?studio=1 (Navbar itself is v-if="studioMode" and never
+// even renders otherwise), so it's loaded on demand instead of bloating
+// the bundle every SabiLine visitor pays for.
+const Navbar = defineAsyncComponent(() => import('./components/Navbar.vue'));
+const HomeView = defineAsyncComponent(() => import('./views/HomeView.vue'));
+const VoiceGeneratorView = defineAsyncComponent(() => import('./views/VoiceGeneratorView.vue'));
+const ResultsView = defineAsyncComponent(() => import('./views/ResultsView.vue'));
+const BenchmarkView = defineAsyncComponent(() => import('./views/BenchmarkView.vue'));
+const CodeSwitchView = defineAsyncComponent(() => import('./views/CodeSwitchView.vue'));
+const MethodologyView = defineAsyncComponent(() => import('./views/MethodologyView.vue'));
+const ImpactView = defineAsyncComponent(() => import('./views/ImpactView.vue'));
+const EthicsView = defineAsyncComponent(() => import('./views/EthicsView.vue'));
 
 // The live site's default experience is just the SabiLine intake demo — no
 // nav chrome, landing straight on Patient Intake, matching the standalone
