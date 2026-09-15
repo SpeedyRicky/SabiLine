@@ -31,7 +31,6 @@
     "src/**/*.vue",
     "vite.config.ts",
     "vitest.config.ts",
-    "server.ts",
-    "api/**/*.ts"
+    "server.ts"
   ]
 }

@@ -7,3 +7,7 @@ coverage/
 .env*
 !.env.example
 *.tsbuildinfo
+# Generated at build time by esbuild (bundles server.ts for Vercel's
+# serverless runtime) — see the "build" script in package.json.
+api/index.js
+api/index.js.map
