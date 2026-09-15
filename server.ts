@@ -777,18 +777,25 @@ async function startServer() {
   });
 }
 
-// Exported so api/index.ts can hand this same Express app to Vercel's Node
-// serverless runtime (Vercel invokes the app directly per-request instead
-// of via a long-running listener). All routes above are registered at
-// module load time regardless of this export, so they're already attached
-// by the time an importer receives `app`.
+// Exported so the build can bundle this same Express app into api/index.js
+// for Vercel's Node serverless runtime (Vercel invokes the app directly
+// per-request instead of via a long-running listener). All routes above are
+// registered at module load time regardless of this export, so they're
+// already attached by the time an importer receives `app`.
 export default app;
 
 // Vercel sets VERCEL=1 in both its build and runtime environments. Only run
 // our own long-running server (Vite middleware in dev, static file serving
 // + app.listen in `npm start`) when NOT deployed on Vercel — its platform
-// serves the static build output directly and invokes api/index.ts as a
-// serverless function per request instead.
+// serves the static build output directly and invokes the bundled
+// api/index.js as a serverless function per request instead. api/index.js
+// is generated at build time (esbuild bundles this file's whole dependency
+// graph into it) rather than checked in, because relying on Vercel's own
+// zero-config TS builder to trace and transpile a relative import reaching
+// outside `api/` (`../server`) silently produced a Lambda that imported the
+// raw, unbundled `server.ts` and crashed at runtime with
+// ERR_MODULE_NOT_FOUND — Node can't execute a .ts file directly. Bundling it
+// ourselves means Vercel just deploys an already-self-contained JS file.
 if (!process.env.VERCEL) {
   startServer();
 }
