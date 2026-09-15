@@ -1,25 +1,33 @@
-// Server-only. Sends the person-in-charge (clinic staff) an English-language
-// summary of a completed patient intake, regardless of what language the
-// intake conversation itself was conducted in — the patient hears and speaks
-// their own language throughout, but the record staff read is always English.
+// Server-only. Records an English-language summary of every completed
+// patient intake for the person in charge (clinic staff), regardless of what
+// language the intake conversation itself was conducted in — the patient
+// hears and speaks their own language throughout, but the record staff read
+// is always English.
 //
-// Delivery is a generic incoming webhook (Slack, Microsoft Teams, Discord,
-// or any automation tool like Make/Zapier all accept this same
-// `{ text: string }` / `content` shape) rather than assuming a specific
-// vendor — set STAFF_NOTIFY_WEBHOOK_URL to wherever staff actually want
-// visit alerts to land. Follows the same honest "not configured" pattern as
-// every other optional provider in this app: nothing is faked as sent.
+// No external service or environment variable is required: summaries are
+// appended to a local JSON visit log (data/staff-visit-log.json), echoed to
+// the server log, and exposed read-only at GET /api/intake/visits so staff
+// can review them from any browser. On a read-only/serverless filesystem the
+// file write is skipped silently and the server log still carries the record.
+import fs from 'node:fs';
+import path from 'node:path';
 import type { IntakeFields } from '../intake/types';
 import type { LanguageCode } from '../../types';
 
-export interface StaffNotifyResult {
-  success: boolean;
-  notConfigured?: boolean;
-  error?: string;
-}
+const DATA_DIR = path.join(process.cwd(), 'data');
+const LOG_FILE = path.join(DATA_DIR, 'staff-visit-log.json');
+const MAX_ENTRIES = 500;
 
-export function isStaffNotifyConfigured(): boolean {
-  return Boolean(process.env.STAFF_NOTIFY_WEBHOOK_URL?.trim());
+export interface StaffVisitEntry {
+  visitId: string;
+  recordedAt: string;
+  language: LanguageCode;
+  fields: IntakeFields;
+  department: string | null;
+  appointmentSlot: string | null;
+  appointmentSlotIso: string | null;
+  needsManualReview: boolean;
+  summary: string;
 }
 
 const LANGUAGE_NAMES: Partial<Record<LanguageCode, string>> = {
@@ -60,33 +68,34 @@ export function buildEnglishVisitSummary(params: {
   return lines.join('\n');
 }
 
-/**
- * Posts the English visit summary to the configured staff webhook. Sends
- * both `text` (Slack/Teams-compatible) and `content` (Discord-compatible)
- * keys so the same payload works against the most common webhook receivers
- * without per-vendor configuration.
- */
-export async function notifyStaffOfVisit(summary: string): Promise<StaffNotifyResult> {
-  const url = process.env.STAFF_NOTIFY_WEBHOOK_URL?.trim();
-  if (!url) {
-    return { success: false, notConfigured: true, error: 'STAFF_NOTIFY_WEBHOOK_URL is not configured.' };
-  }
-
+function loadLog(): StaffVisitEntry[] {
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: summary, content: summary }),
-    });
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '');
-      throw new Error(`Staff notification webhook returned status ${response.status}. ${errText}`.trim());
-    }
-    return { success: true };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Sending the staff notification failed.',
-    };
+    if (!fs.existsSync(LOG_FILE)) return [];
+    const parsed = JSON.parse(fs.readFileSync(LOG_FILE, 'utf-8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
+}
+
+/**
+ * Records a completed intake for staff. Never throws — a failed disk write
+ * (read-only filesystem) must never break the patient-facing response.
+ */
+export function recordVisitForStaff(entry: Omit<StaffVisitEntry, 'recordedAt'>): void {
+  const full: StaffVisitEntry = { ...entry, recordedAt: new Date().toISOString() };
+  console.log(`[SabiLine staff record]\n${full.summary}`);
+  try {
+    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+    const log = loadLog().filter((e) => e.visitId !== full.visitId);
+    log.unshift(full);
+    fs.writeFileSync(LOG_FILE, JSON.stringify(log.slice(0, MAX_ENTRIES), null, 2));
+  } catch {
+    // Best-effort persistence only.
+  }
+}
+
+/** Newest first. */
+export function listStaffVisits(): StaffVisitEntry[] {
+  return loadLog();
 }

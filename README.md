@@ -36,8 +36,8 @@ transparent way to compare how well different speech models actually perform on 
   reason for visit, department, appointment) is recorded in English regardless of which of the five
   languages the conversation itself happened in — only `spokenReply`, the line actually spoken back to the
   patient, is allowed to be in their language — and the moment the intake is marked done, that English
-  summary is pushed automatically to the person in charge via `STAFF_NOTIFY_WEBHOOK_URL` (a Slack/Teams/
-  Discord/Zapier-compatible incoming webhook), honestly reporting "not configured" when unset. The same
+  summary is recorded automatically for the person in charge (server-side visit log, readable at
+  `GET /api/intake/visits`, plus the server console) with no extra service or environment variable. The same
   "done" moment also arms two automatic outbound Twilio reminder calls — one about 2 days before the
   confirmed appointment, one about 2 hours before — computed from a real ISO timestamp behind the scenes
   (see `src/services/reminder/reminderScheduler.ts`); each visit card still has a manual "Send reminder
@@ -164,9 +164,10 @@ statement, including the explicit acknowledgment that this tool does not provide
   external cron (Vercel Cron, a scheduled GitHub Action, etc.) at `POST /api/intake/reminders/run-due` every
   10-15 minutes to sweep for anything due, or rely on the manual "Send reminder call" button, which always
   works regardless of deployment target.
-- The person-in-charge notification (`src/services/notify/staffNotify.ts`, `STAFF_NOTIFY_WEBHOOK_URL`) is a
-  generic incoming-webhook push (Slack/Teams/Discord/Zapier-shaped payload), not a dedicated email/SMS
-  integration — wire the webhook URL to whatever channel staff actually monitor.
+- The person-in-charge record (`src/services/notify/staffNotify.ts`, `GET /api/intake/visits`) is a local JSON
+  log (`data/staff-visit-log.json`) plus the server console. On a serverless deployment the file write is
+  skipped (read-only filesystem) and the console/log stream is the durable copy — check the platform's
+  function logs, or add a database if a shared, long-lived record is needed.
 - Because Patient Intake is a genuine open-ended conversation, it spends one `gemini-3.8-flash` call per
   turn (plus one for language detection on the first turn) rather than the 2-3 calls a fixed-question flow
   would use — a single intake call can use up a meaningful share of that model's 20-requests/day free-tier

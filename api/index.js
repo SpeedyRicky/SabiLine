@@ -1,6 +1,6 @@
 // server.ts
 import express from "express";
-import path2 from "path";
+import path3 from "path";
 import dotenv from "dotenv";
 import { Modality as Modality2 } from "@google/genai";
 
@@ -747,6 +747,11 @@ function listScheduledReminders() {
 }
 
 // src/services/notify/staffNotify.ts
+import fs2 from "node:fs";
+import path2 from "node:path";
+var DATA_DIR2 = path2.join(process.cwd(), "data");
+var LOG_FILE = path2.join(DATA_DIR2, "staff-visit-log.json");
+var MAX_ENTRIES = 500;
 var LANGUAGE_NAMES2 = {
   en: "English",
   pcm: "Nigerian Pidgin",
@@ -776,28 +781,29 @@ function buildEnglishVisitSummary(params) {
   }
   return lines.join("\n");
 }
-async function notifyStaffOfVisit(summary) {
-  const url = process.env.STAFF_NOTIFY_WEBHOOK_URL?.trim();
-  if (!url) {
-    return { success: false, notConfigured: true, error: "STAFF_NOTIFY_WEBHOOK_URL is not configured." };
-  }
+function loadLog() {
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: summary, content: summary })
-    });
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "");
-      throw new Error(`Staff notification webhook returned status ${response.status}. ${errText}`.trim());
-    }
-    return { success: true };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : "Sending the staff notification failed."
-    };
+    if (!fs2.existsSync(LOG_FILE)) return [];
+    const parsed = JSON.parse(fs2.readFileSync(LOG_FILE, "utf-8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
+}
+function recordVisitForStaff(entry) {
+  const full = { ...entry, recordedAt: (/* @__PURE__ */ new Date()).toISOString() };
+  console.log(`[SabiLine staff record]
+${full.summary}`);
+  try {
+    if (!fs2.existsSync(DATA_DIR2)) fs2.mkdirSync(DATA_DIR2, { recursive: true });
+    const log = loadLog().filter((e) => e.visitId !== full.visitId);
+    log.unshift(full);
+    fs2.writeFileSync(LOG_FILE, JSON.stringify(log.slice(0, MAX_ENTRIES), null, 2));
+  } catch {
+  }
+}
+function listStaffVisits() {
+  return loadLog();
 }
 
 // server.ts
@@ -2087,7 +2093,16 @@ function finalizeIntakeIfDone(visitId, language, reply) {
     appointmentSlot: reply.appointmentSlot ?? null,
     needsManualReview: Boolean(reply.needsManualReview)
   });
-  void notifyStaffOfVisit(summary);
+  recordVisitForStaff({
+    visitId,
+    language,
+    fields: reply.fields,
+    department: reply.department ?? null,
+    appointmentSlot: reply.appointmentSlot ?? null,
+    appointmentSlotIso: reply.appointmentSlotIso ?? null,
+    needsManualReview: Boolean(reply.needsManualReview),
+    summary
+  });
   scheduleAppointmentReminders({
     visitId,
     phoneNumber: reply.fields.phoneNumber ?? null,
@@ -2298,6 +2313,9 @@ app.post("/api/intake/reminders/run-due", asyncHandler(async (_req, res) => {
   const result = await runDueReminders();
   res.json({ success: true, ...result });
 }));
+app.get("/api/intake/visits", (_req, res) => {
+  res.json({ success: true, visits: listStaffVisits() });
+});
 app.get("/api/intake/reminders", (_req, res) => {
   res.json({ success: true, reminders: listScheduledReminders() });
 });
@@ -2323,10 +2341,10 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path2.join(process.cwd(), "dist");
+    const distPath = path3.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
-      res.sendFile(path2.join(distPath, "index.html"));
+      res.sendFile(path3.join(distPath, "index.html"));
     });
   }
   rehydratePendingReminders();

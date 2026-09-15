@@ -11,7 +11,7 @@ import { detectLanguageAndTranscribe, detectLanguageFromText } from './src/servi
 import { getSabiLineReply } from './src/services/intake/converse';
 import { isTwilioConfigured, placeReminderCall } from './src/services/reminder/twilioReminder';
 import { scheduleAppointmentReminders, rehydratePendingReminders, runDueReminders, listScheduledReminders } from './src/services/reminder/reminderScheduler';
-import { notifyStaffOfVisit, buildEnglishVisitSummary } from './src/services/notify/staffNotify';
+import { recordVisitForStaff, buildEnglishVisitSummary, listStaffVisits } from './src/services/notify/staffNotify';
 import { randomUUID } from 'crypto';
 import { normalizeQuietAudio } from './src/services/asr/audioPreprocess';
 import { calculateWER } from './src/services/benchmark/wer';
@@ -625,8 +625,8 @@ app.post('/api/benchmark/run', asyncHandler(async (req: Request, res: Response) 
 // The reply is genuinely generated per turn, never a fixed script: SabiLine
 // asks about whatever it doesn't have yet, in whatever order feels natural,
 // and only signals "done" once it has actually gathered what it can.
-// Fires once per intake, the turn Gemini sets "done": true — sends staff the
-// English visit summary and, when a phone number + confirmed appointment
+// Fires once per intake, the turn Gemini sets "done": true — records the
+// English visit summary for staff (GET /api/intake/visits) and, when a phone number + confirmed appointment
 // timestamp are on file, arms the two automatic Twilio reminder calls (2
 // days and 2 hours before the appointment). Never blocks or fails the
 // caller-facing response: both are best-effort side effects.
@@ -645,7 +645,16 @@ function finalizeIntakeIfDone(
     appointmentSlot: reply.appointmentSlot ?? null,
     needsManualReview: Boolean(reply.needsManualReview),
   });
-  void notifyStaffOfVisit(summary);
+  recordVisitForStaff({
+    visitId,
+    language,
+    fields: reply.fields,
+    department: reply.department ?? null,
+    appointmentSlot: reply.appointmentSlot ?? null,
+    appointmentSlotIso: reply.appointmentSlotIso ?? null,
+    needsManualReview: Boolean(reply.needsManualReview),
+    summary,
+  });
 
   scheduleAppointmentReminders({
     visitId,
@@ -900,6 +909,12 @@ app.post('/api/intake/reminders/run-due', asyncHandler(async (_req: Request, res
   const result = await runDueReminders();
   res.json({ success: true, ...result });
 }));
+
+// English-language record of every completed intake, newest first, for the
+// person in charge — no external service or env var needed.
+app.get('/api/intake/visits', (_req: Request, res: Response) => {
+  res.json({ success: true, visits: listStaffVisits() });
+});
 
 app.get('/api/intake/reminders', (_req: Request, res: Response) => {
   res.json({ success: true, reminders: listScheduledReminders() });
