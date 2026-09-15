@@ -60,6 +60,7 @@ export interface IntakeConverseResponse {
   needsManualReview?: boolean;
   error?: string;
   quotaExceeded?: boolean;
+  notConfigured?: boolean;
 }
 
 export interface IntakeRecord {

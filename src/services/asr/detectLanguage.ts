@@ -1,4 +1,4 @@
-import { getGeminiClient, isQuotaExceededError } from '../tts/geminiClient';
+import { getGeminiClient, isQuotaExceededError, withGeminiRetry } from '../tts/geminiClient';
 import type { LanguageCode } from '../../types';
 
 export interface DetectLanguageResult {
@@ -7,6 +7,7 @@ export interface DetectLanguageResult {
   transcript?: string;
   error?: string;
   quotaExceeded?: boolean;
+  notConfigured?: boolean;
   latencyMs: number;
 }
 
@@ -25,24 +26,26 @@ export async function detectLanguageAndTranscribe(audioBase64: string, mimeType:
   const start = Date.now();
   const ai = getGeminiClient();
   if (!ai) {
-    return { success: false, error: 'GEMINI_API_KEY is not configured.', latencyMs: Date.now() - start };
+    return { success: false, notConfigured: true, error: 'GEMINI_API_KEY is not configured.', latencyMs: Date.now() - start };
   }
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: [
-        {
-          parts: [
-            {
-              text: `Listen to this audio of a patient speaking at a health clinic intake desk. First identify which language they are speaking, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. If none of those are a good match, still pick the closest one. Then transcribe exactly what they said, including any code-switching between languages. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful", "transcript": string}`,
-            },
-            { inlineData: { mimeType, data: audioBase64 } },
-          ],
-        },
-      ],
-      config: { responseMimeType: 'application/json' },
-    });
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: [
+          {
+            parts: [
+              {
+                text: `Listen to this audio of a patient speaking at a health clinic intake desk. First identify which language they are speaking, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. If none of those are a good match, still pick the closest one. Then transcribe exactly what they said, including any code-switching between languages. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful", "transcript": string}`,
+              },
+              { inlineData: { mimeType, data: audioBase64 } },
+            ],
+          },
+        ],
+        config: { responseMimeType: 'application/json' },
+      })
+    );
 
     const parsed = JSON.parse(response.text || '{}');
     const transcript = String(parsed.transcript || '').trim();
@@ -68,6 +71,7 @@ export interface DetectLanguageFromTextResult {
   languageCode?: LanguageCode;
   error?: string;
   quotaExceeded?: boolean;
+  notConfigured?: boolean;
   latencyMs: number;
 }
 
@@ -81,23 +85,25 @@ export async function detectLanguageFromText(text: string): Promise<DetectLangua
   const start = Date.now();
   const ai = getGeminiClient();
   if (!ai) {
-    return { success: false, error: 'GEMINI_API_KEY is not configured.', latencyMs: Date.now() - start };
+    return { success: false, notConfigured: true, error: 'GEMINI_API_KEY is not configured.', latencyMs: Date.now() - start };
   }
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: [
-        {
-          parts: [
-            {
-              text: `A patient typed this at a health clinic intake desk: "${text.replace(/"/g, "'")}". Identify which language they most likely intended, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful"}`,
-            },
-          ],
-        },
-      ],
-      config: { responseMimeType: 'application/json' },
-    });
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: [
+          {
+            parts: [
+              {
+                text: `A patient typed this at a health clinic intake desk: "${text.replace(/"/g, "'")}". Identify which language they most likely intended, choosing the closest match from: ${LANGUAGE_CHOICES_DESC}. Return ONLY this JSON shape: {"languageCode": "en"|"pcm"|"yo"|"ig"|"ha"|"ful"}`,
+              },
+            ],
+          },
+        ],
+        config: { responseMimeType: 'application/json' },
+      })
+    );
 
     const parsed = JSON.parse(response.text || '{}');
     const languageCode = SUPPORTED_CODES.includes(parsed.languageCode) ? (parsed.languageCode as LanguageCode) : 'en';

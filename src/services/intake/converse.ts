@@ -1,4 +1,4 @@
-import { getGeminiClient, isQuotaExceededError } from '../tts/geminiClient';
+import { getGeminiClient, isQuotaExceededError, withGeminiRetry } from '../tts/geminiClient';
 import type { LanguageCode } from '../../types';
 import type { IntakeFields, IntakeConversationTurn } from './types';
 
@@ -45,6 +45,7 @@ export interface ConverseResult {
   needsManualReview?: boolean;
   error?: string;
   quotaExceeded?: boolean;
+  notConfigured?: boolean;
 }
 
 // Gemini has no innate sense of elapsed time — each call sees only what's in
@@ -95,7 +96,7 @@ export async function getSabiLineReply(
 ): Promise<ConverseResult> {
   const ai = getGeminiClient();
   if (!ai) {
-    return { success: false, error: 'GEMINI_API_KEY is required for the conversational intake.' };
+    return { success: false, notConfigured: true, error: 'GEMINI_API_KEY is required for the conversational intake.' };
   }
 
   const isOpeningCall = userText === null;
@@ -106,14 +107,16 @@ export async function getSabiLineReply(
       .map((turn) => ({ role: turn.role, parts: [{ text: turn.text }] }))
       .concat([{ role: 'user' as const, parts: [{ text: newTurnText }] }]);
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents,
-      config: {
-        systemInstruction: buildSystemInstruction(language, elapsedMinutes, isOpeningCall),
-        responseMimeType: 'application/json',
-      },
-    });
+    const response = await withGeminiRetry(() =>
+      ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents,
+        config: {
+          systemInstruction: buildSystemInstruction(language, elapsedMinutes, isOpeningCall),
+          responseMimeType: 'application/json',
+        },
+      })
+    );
 
     const parsed = JSON.parse(response.text || '{}');
     const spokenReply = String(parsed.spokenReply || '').trim();

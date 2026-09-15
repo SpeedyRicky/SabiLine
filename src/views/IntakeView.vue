@@ -132,6 +132,21 @@ const speakDisabled = computed(() =>
   ['requesting_mic', 'recording', 'thinking', 'speaking', 'complete'].includes(phase.value)
 );
 
+// Picks the most accurate notice for a failed turn: a real misconfiguration
+// (a required API key missing on this deployment) is a different problem
+// from a temporary quota limit, which is different again from anything
+// else — showing the generic fallback for all three would leave whoever's
+// debugging this guessing at the actual cause.
+function failureNotice(data: Pick<IntakeConverseResponse, 'quotaExceeded' | 'notConfigured'>, quotaMessage: string, fallback: string): string {
+  if (data.notConfigured) {
+    return "SabiLine isn&rsquo;t fully set up on this deployment yet &mdash; a required API key is missing. Please let the site owner know.";
+  }
+  if (data.quotaExceeded) {
+    return quotaMessage;
+  }
+  return fallback;
+}
+
 function resetForNewCall() {
   phase.value = 'idle';
   callStarted.value = false;
@@ -196,9 +211,11 @@ async function startCall() {
       if (data.error) logError('intake:startCall', data.error);
       phase.value = 'idle';
       callStarted.value = false;
-      noticeHtml.value = data.quotaExceeded
-        ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't start the call. Please try again later."
-        : 'Something went wrong connecting the call. Please try again.';
+      noticeHtml.value = failureNotice(
+        data,
+        "Gemini's free-tier quota is exhausted right now, so SabiLine can't start the call. Please try again later.",
+        'Something went wrong connecting the call. Please try again.'
+      );
       return;
     }
 
@@ -370,9 +387,11 @@ async function sendVoiceTurn(audioBase64: string) {
     if (!res.ok || !data.success) {
       if (data.error) logError('intake:sendVoiceTurn', data.error);
       phase.value = 'idle';
-      noticeHtml.value = data.quotaExceeded
-        ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand or respond at the moment. Please try again later."
-        : 'Something went wrong. Please try again.';
+      noticeHtml.value = failureNotice(
+        data,
+        "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand or respond at the moment. Please try again later.",
+        'Something went wrong. Please try again.'
+      );
       return;
     }
 
@@ -380,9 +399,11 @@ async function sendVoiceTurn(audioBase64: string) {
 
     if (!data.transcript) {
       phase.value = 'idle';
-      noticeHtml.value = data.quotaExceeded
-        ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand speech at the moment. Please try again later."
-        : 'Didn&rsquo;t catch that. Try again, or use &ldquo;Prefer to type instead&rdquo; below.';
+      noticeHtml.value = failureNotice(
+        data,
+        "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand speech at the moment. Please try again later.",
+        'Didn&rsquo;t catch that. Try again, or use &ldquo;Prefer to type instead&rdquo; below.'
+      );
       return;
     }
 
@@ -429,9 +450,11 @@ async function submitTyped() {
     if (!res.ok || !data.success) {
       if (data.error) logError('intake:submitTyped', data.error);
       phase.value = 'idle';
-      noticeHtml.value = data.quotaExceeded
-        ? "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand or respond at the moment. Please try again later."
-        : 'Something went wrong. Please try again.';
+      noticeHtml.value = failureNotice(
+        data,
+        "Gemini's free-tier quota is exhausted right now, so SabiLine can't understand or respond at the moment. Please try again later.",
+        'Something went wrong. Please try again.'
+      );
       return;
     }
 
@@ -698,15 +721,22 @@ async function handleSpeakClick() {
 }
 
 .app {
-  max-width: 720px;
-  margin: 0 auto;
+  width: 100%;
   padding-block: 12px 32px;
+  padding-inline: clamp(16px, 4vw, 64px);
   display: flex;
   flex-direction: column;
   gap: 18px;
 }
 
+/* The page shell (header, background) fills the full browser width; the
+   actual call UI and visit cards stay at a comfortably readable width and
+   center within it — a phone-call-sized dialog stretched edge-to-edge on a
+   wide monitor would be harder to use, not easier. */
 header.top {
+  width: 100%;
+  max-width: 1100px;
+  margin-inline: auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -771,6 +801,9 @@ section.view {
   display: none;
   flex-direction: column;
   gap: 18px;
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
 }
 section.view.active {
   display: flex;

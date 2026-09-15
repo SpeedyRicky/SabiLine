@@ -27,6 +27,24 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '50mb' }));
 
+// Express 4 does not catch a rejected promise from an async route handler —
+// an unexpected throw deep in a call chain (not caught by that function's
+// own try/catch) would otherwise leave the request hanging until the
+// platform's own timeout kills it, returning a non-JSON error page that
+// breaks every client-side `res.json()` call. Every async route below is
+// wrapped in this so any such gap degrades to one honest JSON error
+// response instead of a silent hang or an opaque platform-level failure.
+function asyncHandler(fn: (req: Request, res: Response) => Promise<unknown>) {
+  return (req: Request, res: Response) => {
+    Promise.resolve(fn(req, res)).catch((err) => {
+      console.error('Unhandled route error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, error: 'Unexpected server error. Please try again.' });
+      }
+    });
+  };
+}
+
 // 1. Health check
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({
@@ -98,7 +116,7 @@ app.get('/api/providers/status', (req: Request, res: Response) => {
 });
 
 // 3. Real Text-To-Speech generation endpoint
-app.post('/api/tts/generate', async (req: Request, res: Response) => {
+app.post('/api/tts/generate', asyncHandler(async (req: Request, res: Response) => {
   const startTime = Date.now();
   const {
     text,
@@ -131,7 +149,7 @@ app.post('/api/tts/generate', async (req: Request, res: Response) => {
 
   // Handle Sahara Provider
   if (provider === 'sahara') {
-    const saharaKey = process.env.SAHARA_API_KEY;
+    const saharaKey = process.env.SAHARA_API_KEY?.trim();
     if (!saharaKey) {
       return res.status(400).json({
         success: false,
@@ -264,10 +282,10 @@ app.post('/api/tts/generate', async (req: Request, res: Response) => {
   }
 
   return res.status(400).json({ success: false, error: `Unknown provider '${provider}' requested.` });
-});
+}));
 
 // 4. Clinical Multilingual Translation Endpoint
-app.post('/api/translate', async (req: Request, res: Response) => {
+app.post('/api/translate', asyncHandler(async (req: Request, res: Response) => {
   const { text, sourceLang = 'en', targetLang } = req.body;
 
   if (!text || !targetLang) {
@@ -317,7 +335,7 @@ ${text}`;
       error: `Translation failed: ${err.message || 'Gemini error'}`,
     });
   }
-});
+}));
 
 // 5. Code-switching analysis endpoint
 app.post('/api/codeswitch/analyze', (req: Request, res: Response) => {
@@ -331,7 +349,7 @@ app.post('/api/codeswitch/analyze', (req: Request, res: Response) => {
 });
 
 // 6. Clinical Spoken QA Evaluation endpoint
-app.post('/api/qa/evaluate', async (req: Request, res: Response) => {
+app.post('/api/qa/evaluate', asyncHandler(async (req: Request, res: Response) => {
   const { question, referenceAnswer, clinicalDomain } = req.body;
 
   const ai = getGeminiClient();
@@ -388,7 +406,7 @@ Return a JSON object with scores from 1 to 5 (or specified enum):
     console.error('QA Eval error:', err);
     return res.status(500).json({ success: false, error: err.message });
   }
-});
+}));
 
 // 7. Live Speech Model Benchmark Runner
 //
@@ -401,7 +419,7 @@ Return a JSON object with scores from 1 to 5 (or specified enum):
 // zero-filled or fabricated. See src/services/asr/ for the provider
 // implementations and src/services/tts/geminiSynthesize.ts for the audio
 // synthesis step.
-app.post('/api/benchmark/run', async (req: Request, res: Response) => {
+app.post('/api/benchmark/run', asyncHandler(async (req: Request, res: Response) => {
   const {
     sampleIds = [],
     selectedModels = DEFAULT_BENCHMARK_MODELS as string[],
@@ -592,7 +610,7 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
         : `Evaluated ${targetSamples.length} de-identified clinical instances across ${(selectedModels as string[]).length} speech models, using synthesized reference audio transcribed live by each model.`,
     },
   });
-});
+}));
 
 // Patient Intake: one live conversational turn. Real audio in (gain-boosted
 // the same way benchmark reference audio is, so soft-spoken patients are
@@ -604,7 +622,7 @@ app.post('/api/benchmark/run', async (req: Request, res: Response) => {
 // The reply is genuinely generated per turn, never a fixed script: SabiLine
 // asks about whatever it doesn't have yet, in whatever order feels natural,
 // and only signals "done" once it has actually gathered what it can.
-app.post('/api/intake/converse', async (req: Request, res: Response) => {
+app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response) => {
   const {
     audioBase64,
     text,
@@ -628,6 +646,7 @@ app.post('/api/intake/converse', async (req: Request, res: Response) => {
       return res.status(reply.quotaExceeded ? 429 : 500).json({
         success: false,
         quotaExceeded: reply.quotaExceeded,
+        notConfigured: reply.notConfigured,
         error: reply.error,
       });
     }
@@ -659,6 +678,7 @@ app.post('/api/intake/converse', async (req: Request, res: Response) => {
           detectedLanguage: null,
           transcript: null,
           quotaExceeded: detection.quotaExceeded,
+          notConfigured: detection.notConfigured,
           error: detection.error,
         });
       }
@@ -677,6 +697,7 @@ app.post('/api/intake/converse', async (req: Request, res: Response) => {
       return res.status(reply.quotaExceeded ? 429 : 500).json({
         success: false,
         quotaExceeded: reply.quotaExceeded,
+        notConfigured: reply.notConfigured,
         error: reply.error,
       });
     }
@@ -729,6 +750,7 @@ app.post('/api/intake/converse', async (req: Request, res: Response) => {
         transcript: null,
         primaryProviderId: null,
         quotaExceeded: detection.quotaExceeded,
+        notConfigured: detection.notConfigured,
         attempts: {
           gemini: { success: false, error: detection.error, latencyMs: detection.latencyMs },
         },
@@ -772,6 +794,7 @@ app.post('/api/intake/converse', async (req: Request, res: Response) => {
     return res.status(reply.quotaExceeded ? 429 : 500).json({
       success: false,
       quotaExceeded: reply.quotaExceeded,
+      notConfigured: reply.notConfigured,
       error: reply.error,
     });
   }
@@ -790,13 +813,13 @@ app.post('/api/intake/converse', async (req: Request, res: Response) => {
     appointmentSlot: reply.appointmentSlot,
     needsManualReview: reply.needsManualReview,
   });
-});
+}));
 
 // Places a real outbound call reminding the patient of their appointment.
 // Honestly reports "not configured" when no Twilio credentials are set,
 // mirroring how every other optional provider in this app behaves —
 // nothing is faked as sent.
-app.post('/api/intake/remind', async (req: Request, res: Response) => {
+app.post('/api/intake/remind', asyncHandler(async (req: Request, res: Response) => {
   const { phoneNumber, department, appointmentSlot } = req.body;
 
   if (!phoneNumber || typeof phoneNumber !== 'string') {
@@ -817,7 +840,7 @@ app.post('/api/intake/remind', async (req: Request, res: Response) => {
 
   const result = await placeReminderCall(phoneNumber, message);
   res.json(result);
-});
+}));
 
 // 8. Reference data endpoint
 app.get('/api/benchmark/reference', (req: Request, res: Response) => {

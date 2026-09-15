@@ -122,7 +122,10 @@ function providerStatus() {
       @select="(tab) => (activeTab = tab)"
     />
 
-    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+    <main
+      class="flex-1 w-full py-6"
+      :class="studioMode ? 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8' : ''"
+    >
       <div v-if="storageWarning" class="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900">
         {{ storageWarning }}
       </div>

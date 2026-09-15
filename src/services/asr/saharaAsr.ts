@@ -23,7 +23,7 @@ export const saharaAsrProvider: SpeechModelProvider = {
 
   async transcribe(audioBase64, mimeType, language) {
     const start = Date.now();
-    const apiKey = process.env.SAHARA_API_KEY;
+    const apiKey = process.env.SAHARA_API_KEY?.trim();
     if (!apiKey) {
       return { success: false, error: 'SAHARA_API_KEY is not configured.', latencyMs: Date.now() - start };
     }

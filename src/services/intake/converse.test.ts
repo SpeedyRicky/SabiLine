@@ -27,6 +27,7 @@ describe('getSabiLineReply without a configured key', () => {
     const result = await getSabiLineReply([], 'hello', 'en', 0);
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/GEMINI_API_KEY/);
+    expect(result.notConfigured).toBe(true);
     expect(mockGenerateContent).not.toHaveBeenCalled();
   });
 });
