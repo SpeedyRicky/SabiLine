@@ -299,20 +299,14 @@ async function sendReminderCall(record: IntakeRecord) {
 
 <template>
   <div class="max-w-3xl mx-auto space-y-6">
-    <div class="text-center sm:text-left">
-      <h1 class="text-xl font-bold text-slate-900 flex items-center justify-center sm:justify-start gap-2">
-        <ClipboardList class="w-5 h-5 text-emerald-700" />
-        SabiLine Patient Intake
-      </h1>
-      <p class="text-sm text-slate-600 mt-1">
-        Tap to speak in English, Yoruba, Igbo, Hausa, Fulfulde, or Pidgin — no need to pick one, and no fixed
-        script: SabiLine responds to whatever you actually say.
-      </p>
-    </div>
+    <h1 class="text-xl font-bold text-[#26200f] flex items-center justify-center sm:justify-start gap-2">
+      <ClipboardList class="w-5 h-5 text-[#96721a]" />
+      SabiLine Patient Intake
+    </h1>
 
-    <div class="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+    <div class="bg-white border border-[#e7ddc2] rounded-xl p-5 space-y-4">
       <div v-if="detectedLanguage" class="flex items-center justify-center">
-        <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-800">
+        <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-[#f6ecd2] border border-[#96721a]/30 text-[#7a5c14]">
           Detected language: {{ LANGUAGE_LABEL[detectedLanguage] || detectedLanguage }}
         </span>
       </div>
@@ -322,26 +316,28 @@ async function sendReminderCall(record: IntakeRecord) {
         <button
           v-if="phase === 'idle' || phase === 'error'"
           id="intake-mic-button"
-          class="w-24 h-24 rounded-full bg-emerald-700 hover:bg-emerald-800 text-white flex items-center justify-center shadow-lg transition-colors"
+          class="intake-speak-btn w-32 h-32 rounded-full bg-[#96721a] hover:bg-[#7a5c14] text-white flex flex-col items-center justify-center gap-1.5 shadow-lg transition-colors"
           @click="startRecording"
         >
-          <Mic class="w-9 h-9" />
+          <Mic class="w-8 h-8" />
+          <span class="text-sm font-semibold tracking-wide">SPEAK</span>
         </button>
 
         <button
           v-else-if="phase === 'recording'"
           id="intake-stop-button"
-          class="w-24 h-24 rounded-full bg-rose-600 hover:bg-rose-700 text-white flex items-center justify-center shadow-lg animate-pulse"
+          class="w-32 h-32 rounded-full bg-rose-600 hover:bg-rose-700 text-white flex flex-col items-center justify-center gap-1.5 shadow-lg animate-pulse"
           @click="stopRecording"
         >
-          <Square class="w-8 h-8" />
+          <Square class="w-7 h-7" />
+          <span class="text-sm font-semibold tracking-wide">LISTENING</span>
         </button>
 
-        <div v-else class="w-24 h-24 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center">
+        <div v-else class="w-32 h-32 rounded-full bg-[#f5eeda] text-[#a89a76] flex items-center justify-center">
           <Loader2 class="w-9 h-9 animate-spin" />
         </div>
 
-        <p class="text-sm text-slate-700 font-medium">
+        <p class="text-sm text-[#4a4128] font-medium">
           <template v-if="phase === 'idle'">{{ hasStarted ? 'Tap to reply' : 'Tap to speak' }}</template>
           <template v-else-if="phase === 'requesting_mic'">Requesting microphone access…</template>
           <template v-else-if="phase === 'recording'">Listening…</template>
@@ -353,7 +349,7 @@ async function sendReminderCall(record: IntakeRecord) {
           </template>
           <template v-else-if="phase === 'error'">Ready to try again</template>
         </p>
-        <p v-if="phase === 'recording'" class="text-xs text-slate-400">Tap the button again to stop</p>
+        <p v-if="phase === 'recording'" class="text-xs text-[#a89a76]">Tap the button again to stop</p>
 
         <p v-if="lastSpeechFallback" class="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
           Gemini voice quota reached — spoke via device voice instead.
@@ -367,16 +363,16 @@ async function sendReminderCall(record: IntakeRecord) {
     </div>
 
     <!-- Conversation transcript -->
-    <div v-if="hasStarted" class="bg-white border border-slate-200 rounded-xl p-5">
-      <h2 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Conversation</h2>
+    <div v-if="hasStarted" class="bg-white border border-[#e7ddc2] rounded-xl p-5">
+      <h2 class="text-xs font-semibold text-[#a89a76] uppercase tracking-wide mb-3">Conversation</h2>
       <div class="flex flex-col gap-2.5 max-h-80 overflow-y-auto pr-1">
         <div
           v-for="(turn, idx) in turns"
           :key="idx"
           class="max-w-[85%] px-3.5 py-2 rounded-2xl text-sm leading-snug"
           :class="turn.role === 'model'
-            ? 'self-start bg-emerald-50 text-emerald-900 rounded-bl-sm'
-            : 'self-end bg-slate-100 text-slate-800 rounded-br-sm'"
+            ? 'self-start bg-[#f6ecd2] text-[#7a5c14] rounded-bl-sm'
+            : 'self-end bg-[#f5eeda] text-[#4a4128] rounded-br-sm'"
         >
           <span class="block text-[10px] uppercase tracking-wide opacity-60 mb-0.5">
             {{ turn.role === 'model' ? 'SabiLine' : 'You' }}
@@ -387,18 +383,18 @@ async function sendReminderCall(record: IntakeRecord) {
     </div>
 
     <!-- Live structured record -->
-    <div v-if="hasStarted" class="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+    <div v-if="hasStarted" class="bg-white border border-[#e7ddc2] rounded-xl p-5 space-y-4">
       <div class="flex items-center justify-between">
-        <h2 class="text-sm font-semibold text-slate-800">
+        <h2 class="text-sm font-semibold text-[#4a4128]">
           {{ phase === 'complete' ? 'Intake submitted' : 'Extracted so far' }}
         </h2>
       </div>
 
       <div v-if="phase === 'complete'" class="text-center py-2">
-        <div class="text-emerald-700 text-2xl font-bold flex items-center justify-center gap-2">
+        <div class="text-[#b8860b] text-2xl font-bold flex items-center justify-center gap-2">
           <CheckCircle2 class="w-6 h-6" /> Reference #{{ finalRecord?.referenceNumber }}
         </div>
-        <p class="text-xs text-slate-500 mt-1">
+        <p class="text-xs text-[#a89a76] mt-1">
           {{ finalRecord?.needsManualReview ? 'Flagged for front desk review — some details need confirming.' : 'Queued for front desk review.' }}
         </p>
         <p v-if="finalRecord?.department || finalRecord?.appointmentSlot" class="text-sm text-emerald-800 mt-2 font-medium">
@@ -409,8 +405,8 @@ async function sendReminderCall(record: IntakeRecord) {
 
       <dl class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
         <div v-for="(label, key, idx) in INTAKE_FIELD_LABELS" :key="key" class="intake-field-reveal" :style="{ animationDelay: `${idx * 90}ms` }">
-          <dt class="text-xs text-slate-500">{{ label }}</dt>
-          <dd class="font-medium" :class="fields[key] ? 'text-slate-900' : 'text-slate-400 italic'">
+          <dt class="text-xs text-[#a89a76]">{{ label }}</dt>
+          <dd class="font-medium" :class="fields[key] ? 'text-[#26200f]' : 'text-[#c7bc9e] italic'">
             {{ fields[key] || 'Not captured' }}
           </dd>
         </div>
@@ -418,23 +414,23 @@ async function sendReminderCall(record: IntakeRecord) {
 
       <div v-if="phase === 'complete'" class="pt-2 text-center">
         <button
-          class="text-sm font-medium text-emerald-700 hover:text-emerald-800 flex items-center gap-1.5 mx-auto"
+          class="text-sm font-medium text-[#96721a] hover:text-[#7a5c14] flex items-center gap-1.5 mx-auto"
           @click="resetForNewIntake"
         >
           <RefreshCw class="w-4 h-4" /> Run another intake
         </button>
       </div>
 
-      <details v-if="phase === 'complete'" class="text-xs text-slate-500">
+      <details v-if="phase === 'complete'" class="text-xs text-[#a89a76]">
         <summary class="cursor-pointer select-none">View raw JSON record</summary>
-        <pre class="mt-2 p-3 bg-slate-50 rounded-lg overflow-x-auto">{{ JSON.stringify(finalRecord, null, 2) }}</pre>
+        <pre class="mt-2 p-3 bg-[#faf9f6] rounded-lg overflow-x-auto">{{ JSON.stringify(finalRecord, null, 2) }}</pre>
       </details>
     </div>
 
     <!-- Judge debug panel: raw per-model outputs, hidden by default -->
-    <div v-if="Object.keys(asrAttempts ?? {}).length > 0" class="bg-white border border-slate-200 rounded-xl p-4">
+    <div v-if="Object.keys(asrAttempts ?? {}).length > 0" class="bg-white border border-[#e7ddc2] rounded-xl p-4">
       <button
-        class="w-full flex items-center justify-between text-sm font-semibold text-slate-700"
+        class="w-full flex items-center justify-between text-sm font-semibold text-[#4a4128]"
         @click="showDebugPanel = !showDebugPanel"
       >
         <span>Judge debug: model outputs for this turn</span>
@@ -448,9 +444,9 @@ async function sendReminderCall(record: IntakeRecord) {
           :key="id"
           class="p-2 rounded-lg border text-xs"
           :class="attempt.success
-            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+            ? 'bg-[#f6ecd2] border-[#96721a]/30 text-[#7a5c14]'
             : attempt.notConfigured
-            ? 'bg-slate-50 border-slate-200 text-slate-500'
+            ? 'bg-[#faf9f6] border-[#e7ddc2] text-[#a89a76]'
             : 'bg-rose-50 border-rose-200 text-rose-700'"
         >
           <div class="font-medium">{{ catalogLabel(String(id)) }}</div>
@@ -460,25 +456,25 @@ async function sendReminderCall(record: IntakeRecord) {
           <div v-if="id === primaryAsrProviderId" class="mt-0.5 font-semibold">Used for this turn</div>
         </div>
       </div>
-      <p v-if="showDebugPanel && gainNormalizationApplied" class="text-[11px] text-slate-500 mt-2">
+      <p v-if="showDebugPanel && gainNormalizationApplied" class="text-[11px] text-[#a89a76] mt-2">
         Audio was quiet, so it was boosted before transcription.
       </p>
     </div>
 
     <!-- Front desk queue -->
-    <div v-if="queue.length > 0" class="bg-white border border-slate-200 rounded-xl p-5">
+    <div v-if="queue.length > 0" class="bg-white border border-[#e7ddc2] rounded-xl p-5">
       <div class="flex items-center justify-between mb-3">
-        <h2 class="text-sm font-semibold text-slate-800">Front desk queue ({{ queue.length }})</h2>
-        <button class="text-xs text-slate-500 hover:text-rose-600" @click="clearQueue">Clear</button>
+        <h2 class="text-sm font-semibold text-[#4a4128]">Front desk queue ({{ queue.length }})</h2>
+        <button class="text-xs text-[#a89a76] hover:text-rose-600" @click="clearQueue">Clear</button>
       </div>
-      <ul class="divide-y divide-slate-100">
+      <ul class="divide-y divide-[#f0e9d6]">
         <li v-for="record in queue" :key="record.id" class="py-2.5 flex flex-col gap-1.5 text-sm">
           <div class="flex items-center justify-between gap-2">
             <div>
-              <span class="font-mono text-xs text-slate-400">#{{ record.referenceNumber }}</span>
-              <span class="font-medium text-slate-900 ml-2">{{ record.fields.name || 'Unnamed patient' }}</span>
-              <span class="text-slate-500"> — {{ record.fields.reasonForVisit || 'reason not captured' }}</span>
-              <span v-if="record.appointmentSlot" class="text-emerald-700"> · {{ record.department }} {{ record.appointmentSlot }}</span>
+              <span class="font-mono text-xs text-[#c7bc9e]">#{{ record.referenceNumber }}</span>
+              <span class="font-medium text-[#26200f] ml-2">{{ record.fields.name || 'Unnamed patient' }}</span>
+              <span class="text-[#a89a76]"> — {{ record.fields.reasonForVisit || 'reason not captured' }}</span>
+              <span v-if="record.appointmentSlot" class="text-[#7a5c14]"> · {{ record.department }} {{ record.appointmentSlot }}</span>
             </div>
             <span
               v-if="record.needsManualReview"
@@ -490,14 +486,14 @@ async function sendReminderCall(record: IntakeRecord) {
 
           <div v-if="record.fields.phoneNumber" class="flex items-center gap-2">
             <button
-              class="text-xs font-medium text-emerald-700 hover:text-emerald-800 flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="text-xs font-medium text-[#96721a] hover:text-[#7a5c14] flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
               :disabled="reminderStatus[record.id]?.state === 'sending'"
               @click="sendReminderCall(record)"
             >
               <PhoneCall class="w-3.5 h-3.5" />
               {{ reminderStatus[record.id]?.state === 'sending' ? 'Calling…' : 'Send reminder call' }}
             </button>
-            <span v-if="reminderStatus[record.id]?.state === 'sent'" class="text-xs text-emerald-700">Call placed</span>
+            <span v-if="reminderStatus[record.id]?.state === 'sent'" class="text-xs text-[#7a5c14]">Call placed</span>
             <span v-if="reminderStatus[record.id]?.state === 'not_configured'" class="text-xs text-amber-700">
               Twilio isn't configured on this deployment
             </span>
@@ -524,6 +520,21 @@ async function sendReminderCall(record: IntakeRecord) {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+.intake-speak-btn {
+  animation: intake-speak-breathe 3.2s ease-in-out infinite;
+}
+
+@keyframes intake-speak-breathe {
+  0%, 100% { box-shadow: 0 10px 30px -10px rgba(150, 114, 26, 0.55); }
+  50% { box-shadow: 0 14px 38px -8px rgba(150, 114, 26, 0.75); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .intake-speak-btn {
+    animation: none;
   }
 }
 </style>
