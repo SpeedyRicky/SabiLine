@@ -11,11 +11,37 @@ const LANGUAGE_NAMES: Partial<Record<LanguageCode, string>> = {
   ful: 'Fulfulde',
 };
 
+// Sample clinic departments and near-future slots — the same lightweight,
+// clearly-labeled-as-sample scheduling data the demo used, now driving the
+// real conversation. Gemini picks from these on the same turn it finishes
+// the intake, rather than a separate (and separately billed) call.
+const DEPARTMENTS = [
+  'Malaria & Fever Care',
+  'Maternal Health',
+  'Child & Vaccination Clinic',
+  'Cardiology',
+  'Pharmacy Refill',
+  'General Triage',
+];
+
+function nextSlots(): string[] {
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return [1, 2, 3].map((offsetDays) => {
+    const d = new Date();
+    d.setDate(d.getDate() + offsetDays);
+    const hour = offsetDays % 2 === 0 ? '10:30am' : '2:15pm';
+    return `${days[d.getDay()]} ${months[d.getMonth()]} ${d.getDate()}, ${hour}`;
+  });
+}
+
 export interface ConverseResult {
   success: boolean;
   spokenReply?: string;
   done?: boolean;
   fields?: IntakeFields;
+  department?: string | null;
+  appointmentSlot?: string | null;
   needsManualReview?: boolean;
   error?: string;
   quotaExceeded?: boolean;
@@ -35,11 +61,11 @@ function buildSystemInstruction(language: LanguageCode, elapsedMinutes: number):
     'You are SabiLine, a warm, human-sounding intake receptionist at an African health clinic.',
     'Speak naturally like a real person: vary your wording, react to what the patient actually said, keep each reply short (1-2 sentences, occasionally 3) since it will be read aloud, and never repeat a question you already have an answer to.',
     `Respond in ${langName}, matching any code-switching the patient uses, without ever mentioning that you're doing this.`,
-    "Through natural back-and-forth, not a rigid checklist and not necessarily in this order, find out: the patient's name, their age or date of birth, their payment or insurance type, their reason for visiting, how long their symptoms have lasted, and any known allergies. Ask about one thing at a time. If they don't know or decline to answer something, don't press repeatedly — move on and leave it blank.",
+    "Through natural back-and-forth, not a rigid checklist and not necessarily in this order, find out: the patient's name, their age or date of birth, a phone number to reach them on (explain it's so the clinic can call to remind them of their appointment), their payment or insurance type, their reason for visiting, how long their symptoms have lasted, and any known allergies. Ask about one thing at a time. If they don't know or decline to answer something, don't press repeatedly — move on and leave it blank.",
     "It's fine for the patient to chat about other things along the way — follow them naturally and don't refuse to engage." + driftNote,
-    'Once you have gathered what you reasonably can, let them know their visit is logged and a staff member will follow up shortly, then say goodbye — set "done" to true only on that final message.',
-    'Always reply with ONLY this JSON: {"spokenReply": string, "done": boolean, "fields": {"name": string|null, "ageOrDob": string|null, "paymentType": string|null, "reasonForVisit": string|null, "symptomDuration": string|null, "allergies": string|null}, "needsManualReview": boolean}.',
-    '"fields" is your best current understanding so far, updated every turn — use null (never a guess) for anything the patient has not actually stated. Set "needsManualReview" to true only once "done" is true and important fields are still missing or unclear.',
+    `Once you have gathered what you reasonably can, pick the single best-fitting department for their reason for visit from this list: ${DEPARTMENTS.join(', ')} — then propose exactly one appointment time from these options: ${nextSlots().join(', ')}. If they want a different time, offer another option from that same list. Once they confirm a time, let them know their visit is logged and a staff member will follow up shortly, then say goodbye — set "done" to true only on that final message.`,
+    'Always reply with ONLY this JSON: {"spokenReply": string, "done": boolean, "fields": {"name": string|null, "ageOrDob": string|null, "phoneNumber": string|null, "paymentType": string|null, "reasonForVisit": string|null, "symptomDuration": string|null, "allergies": string|null}, "department": string|null, "appointmentSlot": string|null, "needsManualReview": boolean}.',
+    '"fields" is your best current understanding so far, updated every turn — use null (never a guess) for anything the patient has not actually stated. "department" and "appointmentSlot" stay null until a time is actually confirmed. Set "needsManualReview" to true only once "done" is true and important fields are still missing or unclear.',
   ].join(' ');
 }
 
@@ -86,6 +112,8 @@ export async function getSabiLineReply(
       spokenReply,
       done: Boolean(parsed.done),
       fields: parsed.fields,
+      department: parsed.department ?? null,
+      appointmentSlot: parsed.appointmentSlot ?? null,
       needsManualReview: Boolean(parsed.needsManualReview),
     };
   } catch (err) {

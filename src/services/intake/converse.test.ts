@@ -54,6 +54,39 @@ describe('getSabiLineReply with a configured key', () => {
     expect(result.fields?.name).toBe('Amina');
   });
 
+  it('returns the assigned department and appointment slot once a time is confirmed', async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      text: JSON.stringify({
+        spokenReply: "You're all set — see you then!",
+        done: true,
+        fields: { name: 'Amina', ageOrDob: null, phoneNumber: null, paymentType: null, reasonForVisit: 'fever', symptomDuration: null, allergies: null },
+        department: 'Malaria & Fever Care',
+        appointmentSlot: 'Mon Sep 15, 10:30am',
+        needsManualReview: false,
+      }),
+    });
+
+    const result = await getSabiLineReply([], 'Yes, Monday at 10:30am works', 'en', 3);
+    expect(result.success).toBe(true);
+    expect(result.department).toBe('Malaria & Fever Care');
+    expect(result.appointmentSlot).toBe('Mon Sep 15, 10:30am');
+  });
+
+  it('reports department and appointmentSlot as null before a time is confirmed', async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      text: JSON.stringify({
+        spokenReply: 'And how long have you had the fever?',
+        done: false,
+        fields: {},
+        needsManualReview: false,
+      }),
+    });
+
+    const result = await getSabiLineReply([], 'Since yesterday', 'en', 0);
+    expect(result.department).toBeNull();
+    expect(result.appointmentSlot).toBeNull();
+  });
+
   it('sends the full conversation history plus the new turn, and never invents an assistant turn', async () => {
     mockGenerateContent.mockResolvedValueOnce({
       text: JSON.stringify({ spokenReply: 'Got it.', done: false, fields: {}, needsManualReview: false }),

@@ -26,7 +26,11 @@ transparent way to compare how well different speech models actually perform on 
   drifts off-topic for a few minutes, and the mic re-activates automatically after every reply so the
   whole thing reads as one continuous call. Once Gemini signals the intake is actually complete, the
   record is shown as JSON and queued in a local "front desk" list, honestly flagged for manual review
-  whenever fields are still missing or unclear.
+  whenever fields are still missing or unclear. Once a phone number is captured, Gemini also picks a
+  clinic department and proposes a near-future appointment slot on the same turn it wraps up the intake —
+  and the front desk queue gets a "Send reminder call" button that places a real outbound call via Twilio
+  reminding the patient of that appointment, honestly reporting "not configured" when Twilio credentials
+  aren't set rather than faking a call.
 - **Speech Benchmark** — run Word Error Rate / Character Error Rate evaluation across three ASR model
   identities (Sahara, Model B, Model C) on a de-identified clinical audio sample set, with configurable
   text normalization and per-utterance error inspection.
@@ -61,6 +65,8 @@ src/
   services/
     tts/          Voice/provider catalog + healthcare text presets
     benchmark/    WER, CER, BLEU/chrF, normalization, code-switch heuristics, sample dataset
+    intake/       Conversational intake engine (Gemini multi-turn reply, structured fields, scheduling)
+    reminder/     Twilio outbound appointment reminder call
   types/          Shared TypeScript interfaces
   utils/          In-app diagnostics/error logging
     asr/          Live ASR provider registry + transcribeWithAllProviders (used by both Benchmark and Intake)
@@ -85,6 +91,7 @@ npm run dev             # http://localhost:3000
 | `SAHARA_TTS_API_KEY` | Intron Sahara native African TTS (Voice Generator) | Sahara option shows "not configured"; switch to Gemini or Device Speech instead. |
 | `SAHARA_STT_API_KEY` | Intron Sahara as a real ASR provider in the Benchmark tab | Sahara is honestly reported as "not configured" and excluded from benchmark averages. These are separate keys — configuring one does not configure the other. |
 | `MODEL_B_API_KEY` + `MODEL_B_API_URL` / `MODEL_C_API_KEY` + `MODEL_C_API_URL` | Bring-your-own real ASR endpoint for the Benchmark tab (no vendor assumed) | Reported as "not configured" and excluded from benchmark averages. |
+| `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` + `TWILIO_FROM_NUMBER` | Placing the post-intake appointment reminder call | The "Send reminder call" button reports "not configured" instead of placing a call. |
 
 No API key is ever sent to or read from the browser — all provider calls happen inside `server.ts`.
 
@@ -127,8 +134,14 @@ statement, including the explicit acknowledgment that this tool does not provide
   Benchmark reference audio is cached per (text, language) in-process to reduce how fast that same quota
   gets consumed by repeated benchmark runs.
 - Patient Intake currently runs entirely in the browser tab (mic capture via `getUserMedia`). A telephony
-  front end (e.g. Twilio, so a real phone call could drive the same intake pipeline) is a natural extension
-  but is out of scope for the primary deliverable.
+  front end that drives the intake conversation itself over a real phone call (rather than just the
+  reminder call described below) is a natural extension but is out of scope for the primary deliverable.
+  Intron's own "Conversation Call" voicebot API is a plausible drop-in for that once a `workflow_id` of
+  type `CONVERSATION` exists in Intron's dashboard — that setup is account-side and hasn't been done yet.
+- The appointment reminder call (`src/services/reminder/twilioReminder.ts`, `/api/intake/remind`) is
+  English-only: Twilio's built-in `<Say>` voice doesn't speak Hausa, Yoruba, Igbo, Fulfulde, or Nigerian
+  Pidgin, so the reminder message is always read in English regardless of the language the intake itself
+  was conducted in.
 - Because Patient Intake is a genuine open-ended conversation, it spends one `gemini-3.8-flash` call per
   turn (plus one for language detection on the first turn) rather than the 2-3 calls a fixed-question flow
   would use — a single intake call can use up a meaningful share of that model's 20-requests/day free-tier

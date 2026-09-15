@@ -11,6 +11,7 @@ import {
   Volume2,
   ChevronDown,
   ChevronUp,
+  PhoneCall,
 } from 'lucide-vue-next';
 import { LANGUAGES, type LanguageCode } from '../types';
 import { catalogLabel } from '../services/asr/catalog';
@@ -35,6 +36,7 @@ const LANGUAGE_LABEL: Partial<Record<LanguageCode, string>> = Object.fromEntries
 const EMPTY_FIELDS: IntakeFields = {
   name: null,
   ageOrDob: null,
+  phoneNumber: null,
   paymentType: null,
   reasonForVisit: null,
   symptomDuration: null,
@@ -49,6 +51,8 @@ const showDebugPanel = ref(false);
 
 const turns = ref<IntakeConversationTurn[]>([]);
 const fields = ref<IntakeFields>({ ...EMPTY_FIELDS });
+const department = ref<string | null>(null);
+const appointmentSlot = ref<string | null>(null);
 const needsManualReview = ref(false);
 const primaryAsrProviderId = ref<string | null>(null);
 const asrAttempts = ref<IntakeConverseResponse['attempts']>({});
@@ -57,6 +61,9 @@ const lastSpeechFallback = ref<string | null>(null);
 
 const finalRecord = ref<IntakeRecord | null>(null);
 const queue = ref<IntakeRecord[]>([]);
+
+type ReminderState = 'sending' | 'sent' | 'not_configured' | 'error';
+const reminderStatus = ref<Record<string, { state: ReminderState; message?: string }>>({});
 
 let mediaRecorder: MediaRecorder | null = null;
 let recordedChunks: Blob[] = [];
@@ -93,6 +100,8 @@ function resetForNewIntake() {
   errorMessage.value = null;
   turns.value = [];
   fields.value = { ...EMPTY_FIELDS };
+  department.value = null;
+  appointmentSlot.value = null;
   needsManualReview.value = false;
   primaryAsrProviderId.value = null;
   asrAttempts.value = {};
@@ -211,6 +220,8 @@ async function sendTurn(audioBase64: string) {
 
   turns.value = [...turns.value, { role: 'model', text: data.spokenReply }];
   if (data.fields) fields.value = { ...EMPTY_FIELDS, ...data.fields };
+  if (data.department !== undefined) department.value = data.department;
+  if (data.appointmentSlot !== undefined) appointmentSlot.value = data.appointmentSlot;
 
   phase.value = 'speaking';
   const outcome = await speakAloud(data.spokenReply, detectedLanguage.value ?? 'en');
@@ -235,6 +246,8 @@ function finalizeIntake(reviewNeeded: boolean) {
     language: detectedLanguage.value ?? 'en',
     conversation: turns.value,
     fields: fields.value,
+    department: department.value,
+    appointmentSlot: appointmentSlot.value,
     needsManualReview: reviewNeeded,
     primaryAsrProviderId: primaryAsrProviderId.value,
     status: 'queued_for_review',
@@ -250,6 +263,36 @@ function clearQueue() {
   if (window.confirm('Clear all queued front-desk intake records?')) {
     queue.value = [];
     saveQueue();
+  }
+}
+
+async function sendReminderCall(record: IntakeRecord) {
+  if (!record.fields.phoneNumber) return;
+
+  reminderStatus.value = { ...reminderStatus.value, [record.id]: { state: 'sending' } };
+
+  try {
+    const res = await fetch('/api/intake/remind', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phoneNumber: record.fields.phoneNumber,
+        department: record.department,
+        appointmentSlot: record.appointmentSlot,
+      }),
+    });
+    const data = await res.json();
+
+    if (data.notConfigured) {
+      reminderStatus.value = { ...reminderStatus.value, [record.id]: { state: 'not_configured', message: data.error } };
+    } else if (data.success) {
+      reminderStatus.value = { ...reminderStatus.value, [record.id]: { state: 'sent' } };
+    } else {
+      reminderStatus.value = { ...reminderStatus.value, [record.id]: { state: 'error', message: data.error } };
+    }
+  } catch (err) {
+    logError('intake:sendReminderCall', err);
+    reminderStatus.value = { ...reminderStatus.value, [record.id]: { state: 'error', message: 'Could not reach the reminder-call service.' } };
   }
 }
 </script>
@@ -354,6 +397,10 @@ function clearQueue() {
         <p class="text-xs text-[#a89a76] mt-1">
           {{ finalRecord?.needsManualReview ? 'Flagged for front desk review — some details need confirming.' : 'Queued for front desk review.' }}
         </p>
+        <p v-if="finalRecord?.department || finalRecord?.appointmentSlot" class="text-sm text-emerald-800 mt-2 font-medium">
+          {{ finalRecord?.department || 'Department not yet assigned' }}
+          <span v-if="finalRecord?.appointmentSlot"> — {{ finalRecord.appointmentSlot }}</span>
+        </p>
       </div>
 
       <dl class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
@@ -421,18 +468,39 @@ function clearQueue() {
         <button class="text-xs text-[#a89a76] hover:text-rose-600" @click="clearQueue">Clear</button>
       </div>
       <ul class="divide-y divide-[#f0e9d6]">
-        <li v-for="record in queue" :key="record.id" class="py-2.5 flex items-center justify-between text-sm gap-2">
-          <div>
-            <span class="font-mono text-xs text-[#c7bc9e]">#{{ record.referenceNumber }}</span>
-            <span class="font-medium text-[#26200f] ml-2">{{ record.fields.name || 'Unnamed patient' }}</span>
-            <span class="text-[#a89a76]"> — {{ record.fields.reasonForVisit || 'reason not captured' }}</span>
+        <li v-for="record in queue" :key="record.id" class="py-2.5 flex flex-col gap-1.5 text-sm">
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <span class="font-mono text-xs text-[#c7bc9e]">#{{ record.referenceNumber }}</span>
+              <span class="font-medium text-[#26200f] ml-2">{{ record.fields.name || 'Unnamed patient' }}</span>
+              <span class="text-[#a89a76]"> — {{ record.fields.reasonForVisit || 'reason not captured' }}</span>
+              <span v-if="record.appointmentSlot" class="text-[#7a5c14]"> · {{ record.department }} {{ record.appointmentSlot }}</span>
+            </div>
+            <span
+              v-if="record.needsManualReview"
+              class="text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 shrink-0"
+            >
+              Needs review
+            </span>
           </div>
-          <span
-            v-if="record.needsManualReview"
-            class="text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 shrink-0"
-          >
-            Needs review
-          </span>
+
+          <div v-if="record.fields.phoneNumber" class="flex items-center gap-2">
+            <button
+              class="text-xs font-medium text-[#96721a] hover:text-[#7a5c14] flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+              :disabled="reminderStatus[record.id]?.state === 'sending'"
+              @click="sendReminderCall(record)"
+            >
+              <PhoneCall class="w-3.5 h-3.5" />
+              {{ reminderStatus[record.id]?.state === 'sending' ? 'Calling…' : 'Send reminder call' }}
+            </button>
+            <span v-if="reminderStatus[record.id]?.state === 'sent'" class="text-xs text-[#7a5c14]">Call placed</span>
+            <span v-if="reminderStatus[record.id]?.state === 'not_configured'" class="text-xs text-amber-700">
+              Twilio isn't configured on this deployment
+            </span>
+            <span v-if="reminderStatus[record.id]?.state === 'error'" class="text-xs text-rose-700">
+              {{ reminderStatus[record.id]?.message || 'Call failed' }}
+            </span>
+          </div>
         </li>
       </ul>
     </div>
