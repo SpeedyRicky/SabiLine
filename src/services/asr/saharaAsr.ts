@@ -5,29 +5,27 @@ import type { SpeechModelProvider } from './types';
  * mirroring the request pattern this codebase's existing Sahara TTS call
  * already uses (https://api.intron.io/v1/tts/synthesize) for consistency.
  *
- * Sahara issues separate API keys per service — SAHARA_TTS_API_KEY gates
- * text-to-speech (see server.ts's /api/tts/generate) and SAHARA_STT_API_KEY
- * gates this speech-to-text provider. They are independent: having one
- * configured does not imply the other is.
+ * A single SAHARA_API_KEY gates both this speech-to-text provider and the
+ * Sahara text-to-speech call in server.ts's /api/tts/generate.
  *
  * IMPORTANT: the exact ASR endpoint path and request/response contract below
  * have not been independently verified against Intron's current API
- * documentation — this environment has no SAHARA_STT_API_KEY and no way to
- * test against the real service. isConfigured() means this code path only
- * runs at all once a real key is supplied; if the real contract turns out to
- * differ, calls will fail with a clear per-sample error (never a fabricated
+ * documentation — this environment has no SAHARA_API_KEY and no way to test
+ * against the real service. isConfigured() means this code path only runs at
+ * all once a real key is supplied; if the real contract turns out to differ,
+ * calls will fail with a clear per-sample error (never a fabricated
  * transcript) rather than silently succeeding with wrong data.
  */
 export const saharaAsrProvider: SpeechModelProvider = {
   id: 'sahara',
   displayName: 'Intron Sahara',
-  isConfigured: () => Boolean(process.env.SAHARA_STT_API_KEY),
+  isConfigured: () => Boolean(process.env.SAHARA_API_KEY),
 
   async transcribe(audioBase64, mimeType, language) {
     const start = Date.now();
-    const apiKey = process.env.SAHARA_STT_API_KEY;
+    const apiKey = process.env.SAHARA_API_KEY;
     if (!apiKey) {
-      return { success: false, error: 'SAHARA_STT_API_KEY is not configured.', latencyMs: Date.now() - start };
+      return { success: false, error: 'SAHARA_API_KEY is not configured.', latencyMs: Date.now() - start };
     }
 
     try {

@@ -39,27 +39,26 @@ app.get('/api/health', (req: Request, res: Response) => {
 // 2. Provider configuration status (honest and transparent)
 app.get('/api/providers/status', (req: Request, res: Response) => {
   const hasGemini = Boolean(process.env.GEMINI_API_KEY);
-  const hasSaharaTts = Boolean(process.env.SAHARA_TTS_API_KEY);
-  const hasSaharaStt = ASR_PROVIDER_REGISTRY.sahara.isConfigured();
+  const hasSahara = Boolean(process.env.SAHARA_API_KEY);
 
   res.json({
     providers: {
       sahara: {
         id: 'sahara',
         name: 'Intron Sahara (TTS)',
-        isConfigured: hasSaharaTts,
-        statusMessage: hasSaharaTts
+        isConfigured: hasSahara,
+        statusMessage: hasSahara
           ? 'Connected (Native African Speech Models active)'
-          : 'Awaiting SAHARA_TTS_API_KEY in server secrets',
+          : 'Awaiting SAHARA_API_KEY in server secrets',
         supportedLanguages: ['ha', 'ig', 'yo', 'en'],
       },
       sahara_stt: {
         id: 'sahara_stt',
         name: 'Intron Sahara (STT / Benchmark)',
-        isConfigured: hasSaharaStt,
-        statusMessage: hasSaharaStt
+        isConfigured: hasSahara,
+        statusMessage: hasSahara
           ? 'Connected (used as a real ASR provider in the Benchmark tab)'
-          : 'Awaiting SAHARA_STT_API_KEY in server secrets',
+          : 'Awaiting SAHARA_API_KEY in server secrets',
         supportedLanguages: ['ha', 'ig', 'yo', 'en'],
       },
       gemini: {
@@ -132,11 +131,11 @@ app.post('/api/tts/generate', async (req: Request, res: Response) => {
 
   // Handle Sahara Provider
   if (provider === 'sahara') {
-    const saharaKey = process.env.SAHARA_TTS_API_KEY;
+    const saharaKey = process.env.SAHARA_API_KEY;
     if (!saharaKey) {
       return res.status(400).json({
         success: false,
-        error: 'Sahara TTS API key is not configured in server environment. Please set SAHARA_TTS_API_KEY in secrets, or choose Gemini 3.1 Flash Voice / Device Web Speech.',
+        error: 'Sahara API key is not configured in server environment. Please set SAHARA_API_KEY in secrets, or choose Gemini 3.1 Flash Voice / Device Web Speech.',
         provider: 'sahara',
       });
     }

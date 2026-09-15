@@ -96,8 +96,7 @@ npm run dev             # http://localhost:3000
 | Variable | Required for | Behavior when unset |
 |---|---|---|
 | `GEMINI_API_KEY` | Gemini TTS, translation, QA judge, and the real Gemini ASR benchmark provider (also synthesizes the reference audio every benchmark run evaluates against) | Those features return an explicit "not configured" error; the rest of the app keeps working. |
-| `SAHARA_TTS_API_KEY` | Intron Sahara native African TTS (Voice Generator) | Sahara option shows "not configured"; switch to Gemini or Device Speech instead. |
-| `SAHARA_STT_API_KEY` | Intron Sahara as a real ASR provider in the Benchmark tab | Sahara is honestly reported as "not configured" and excluded from benchmark averages. These are separate keys — configuring one does not configure the other. |
+| `SAHARA_API_KEY` | Intron Sahara native African TTS (Voice Generator) and as a real ASR provider in the Benchmark tab — one key powers both | Sahara options are honestly reported as "not configured" and excluded from benchmark averages; switch to Gemini or Device Speech in the Voice Generator instead. |
 | `MODEL_B_API_KEY` + `MODEL_B_API_URL` / `MODEL_C_API_KEY` + `MODEL_C_API_URL` | Bring-your-own real ASR endpoint for the Benchmark tab (no vendor assumed) | Reported as "not configured" and excluded from benchmark averages. |
 | `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` + `TWILIO_FROM_NUMBER` | Placing the post-intake appointment reminder call | The "Send reminder call" button reports "not configured" instead of placing a call. |
 
