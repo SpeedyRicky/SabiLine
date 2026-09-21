@@ -8,7 +8,7 @@ import { saharaAsrProvider } from './src/services/asr/saharaAsr';
 import { getActiveModels } from './src/services/tts/openaiClient';
 import { ASR_PROVIDER_REGISTRY, DEFAULT_BENCHMARK_MODELS } from './src/services/asr/registry';
 import { transcribeWithAllProviders, LIVE_ASR_PRIORITY } from './src/services/asr/transcribeLive';
-import { detectLanguageAndTranscribe, detectLanguageFromText, transcribeWithLanguageHint, isLowEvidenceForLanguageSwitch, resolveLanguageSwitch } from './src/services/asr/detectLanguage';
+import { detectLanguageAndTranscribe, detectLanguageFromText, transcribeWithLanguageHint, isLowEvidenceForLanguageSwitch, resolveLanguageSwitch, SUPPORTED_LANGUAGE_CODES } from './src/services/asr/detectLanguage';
 import { getSabiLineReply } from './src/services/intake/converse';
 import { isTwilioConfigured, placeReminderCall } from './src/services/reminder/twilioReminder';
 import { scheduleAppointmentReminders, rehydratePendingReminders, runDueReminders, listScheduledReminders } from './src/services/reminder/reminderScheduler';
@@ -681,14 +681,41 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
   const resolvedVisitId: string = typeof visitId === 'string' && visitId ? visitId : randomUUID();
   const priorLanguageHistory: LanguageCode[] = Array.isArray(languageHistory) ? languageHistory : [];
 
-  // Tapping SPEAK for the first time connects the call before the patient
-  // has said anything — SabiLine opens with a greeting rather than waiting
-  // to be spoken to first, same as a real receptionist answering a call.
-  // Nothing was heard yet, so there's no language to detect: the opening
-  // greeting is always in English, and real detection runs on the
-  // patient's first actual reply (voice or typed) below.
+  // Tapping SPEAK for the first time connects the call before the patient has
+  // said anything. Which language they speak is only knowable once they have
+  // spoken — with one exception: if this browser has used SabiLine before in a
+  // known language, the client sends it and SabiLine can open in that language
+  // directly.
+  //
+  // With NO known language, SabiLine deliberately does not open with an
+  // English greeting. A patient who only speaks Hausa should not hear English
+  // as the first thing said to them, and a greeting nobody understands is
+  // worse than no greeting: it reads as a broken line. Instead the client is
+  // told to listen first (see `listenFirst`), and SabiLine's first spoken
+  // sentence ends up in the language it actually hears. This also saves a
+  // completion call on the opening turn.
   if (startCall === true) {
-    const reply = await getSabiLineReply(Array.isArray(history) ? history : [], null, 'en', 0);
+    const openingLanguage =
+      typeof language === 'string' && language !== 'auto' && SUPPORTED_LANGUAGE_CODES.includes(language as LanguageCode)
+        ? (language as LanguageCode)
+        : null;
+
+    if (openingLanguage === null) {
+      return res.json({
+        success: true,
+        visitId: resolvedVisitId,
+        listenFirst: true,
+        spokenReply: null,
+        done: false,
+        fields: null,
+        department: null,
+        appointmentSlot: null,
+        appointmentSlotIso: null,
+        needsManualReview: false,
+      });
+    }
+
+    const reply = await getSabiLineReply(Array.isArray(history) ? history : [], null, openingLanguage, 0);
     if (!reply.success) {
       return res.status(reply.quotaExceeded ? 429 : 500).json({
         success: false,
@@ -698,10 +725,11 @@ app.post('/api/intake/converse', asyncHandler(async (req: Request, res: Response
         error: reply.error,
       });
     }
-    finalizeIntakeIfDone(resolvedVisitId, 'en', reply, priorLanguageHistory);
+    finalizeIntakeIfDone(resolvedVisitId, openingLanguage, reply, priorLanguageHistory);
     return res.json({
       success: true,
       visitId: resolvedVisitId,
+      detectedLanguage: openingLanguage,
       spokenReply: reply.spokenReply,
       done: reply.done,
       fields: reply.fields,
