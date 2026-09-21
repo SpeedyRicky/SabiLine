@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SabiLine Benchmark Report</title>
+<style>
+  @page { size: A4; margin: 13mm 14mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-size: 8.4pt; line-height: 1.32; color: #1c2229; margin: 0;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  h1 { font-size: 16pt; margin: 0 0 1mm; letter-spacing: -0.3px; }
+  h2 {
+    font-size: 9.6pt; margin: 2.8mm 0 1.2mm; color: #0f5132;
+    border-bottom: 1.2px solid #0f5132; padding-bottom: 0.7mm; letter-spacing: 0.2px;
+  }
+  h3 { font-size: 8.6pt; margin: 2.4mm 0 1mm; color: #1c2229; }
+  p { margin: 0 0 1.6mm; }
+  .sub { color: #5b6670; font-size: 8pt; }
+  .hdr { border-bottom: 2.2px solid #0f5132; padding-bottom: 2mm; margin-bottom: 1mm; }
+  .hdr-row { display: flex; justify-content: space-between; align-items: flex-end; }
+  .meta { text-align: right; font-size: 7.4pt; color: #5b6670; line-height: 1.45; }
+  table { width: 100%; border-collapse: collapse; margin: 1.2mm 0 2mm; font-size: 7.6pt; }
+  th, td { border: 0.5px solid #c8d0d6; padding: 1.1mm 1.4mm; text-align: left; vertical-align: top; }
+  th { background: #eef2f994; font-weight: 700; color: #26323c; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.best td { background: #e8f5ee; font-weight: 600; }
+  .tag {
+    display: inline-block; font-size: 6.4pt; font-weight: 700; padding: 0.3mm 1.1mm;
+    border-radius: 1.5px; letter-spacing: 0.3px; vertical-align: 1px;
+  }
+  .tag-m { background: #0f5132; color: #fff; }
+  .tag-p { background: #e3e8ec; color: #48545e; }
+  .note {
+    background: #fbf7e8; border-left: 2px solid #c8a534; padding: 1.5mm 2mm;
+    margin: 1.6mm 0; font-size: 7.5pt;
+  }
+  .grid2 { display: flex; gap: 3.5mm; }
+  .grid2 > div { flex: 1; }
+  ul { margin: 0.6mm 0 1.6mm; padding-left: 3.6mm; }
+  li { margin-bottom: 0.7mm; }
+  code {
+    font-family: "SFMono-Regular", Consolas, monospace; font-size: 7.2pt;
+    background: #f1f4f6; padding: 0.2mm 0.8mm; border-radius: 1.5px;
+  }
+  .page-break { page-break-before: always; }
+  .foot {
+    border-top: 0.5px solid #c8d0d6; margin-top: 2.5mm; padding-top: 1.2mm;
+    font-size: 6.9pt; color: #78848d;
+  }
+  .kv { font-size: 7.6pt; }
+  .kv b { color: #26323c; }
+  .xscript {
+    font-size: 7.3pt; background: #f7f9fa; border: 0.5px solid #dde3e8;
+    padding: 1.4mm 1.8mm; margin: 1.2mm 0; line-height: 1.5;
+  }
+  .xscript .lbl { color: #5b6670; font-weight: 700; font-size: 6.8pt; letter-spacing: 0.3px; }
+  .hl { background: #ffe9a8; padding: 0 0.5mm; }
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="hdr-row">
+    <div>
+      <h1>SabiLine — Speech Model Benchmark Report</h1>
+      <div class="sub">Multilingual clinical speech recognition for African languages &amp; intra-utterance code-switching</div>
+    </div>
+    <div class="meta">
+      Intron Voice AI Challenge — Health<br>
+      Report date: 15 September 2026<br>
+      Live run ID: <code>RUN-MU39WOO6</code>
+    </div>
+  </div>
+</div>
+
+<div class="note">
+  <b>Provenance notice.</b> This report distinguishes two classes of number, and never mixes them in a
+  single claim. <span class="tag tag-m">MEASURED</span> = produced by SabiLine's own evaluation harness
+  against live model APIs during this submission. <span class="tag tag-p">PUBLISHED</span> = figures from
+  the supplied Intron AfriHealth MultiBench reference documentation, cited for comparison and
+  <i>not</i> re-derived here. Sahara's ASR endpoint (<code>api.intron.io</code>) was unreachable from
+  the sandboxed build network (HTTP 403 at the egress proxy), so Sahara appears here with published
+  figures only; §6 gives the one-command path to reproduce it on an unrestricted network.
+</div>
+
+<h2>1. Model comparison summary</h2>
+
+<table>
+  <tr>
+    <th style="width:17%">Model</th>
+    <th class="n" style="width:8%">Macro WER</th>
+    <th class="n" style="width:8%">Macro CER</th>
+    <th class="n" style="width:9%">Latency</th>
+    <th class="n" style="width:9%">Afr. coverage</th>
+    <th>Pros / Cons</th>
+  </tr>
+  <tr class="best">
+    <td><b>Intron Sahara</b><br><span class="tag tag-p">PUBLISHED</span></td>
+    <td class="n">0.244</td><td class="n">0.107</td><td class="n">412 ms</td><td class="n">96.4%</td>
+    <td><b>+</b> Best tonal-language resilience; trained natively on W/E African clinical audio; widest language coverage.
+        <b>−</b> Vendor-specific API; could not be independently verified in this environment.</td>
+  </tr>
+  <tr>
+    <td><b>Meta OmniLLM</b><br><span class="tag tag-p">PUBLISHED</span></td>
+    <td class="n">0.268</td><td class="n">0.119</td><td class="n">580 ms</td><td class="n">88.5%</td>
+    <td><b>+</b> Strong multimodal speech reasoning on accented multilingual speech.
+        <b>−</b> Moderate latency at code-switch boundaries; 2nd-tier tonal accuracy.</td>
+  </tr>
+  <tr>
+    <td><b>Azure Cognitive Speech</b><br><span class="tag tag-p">PUBLISHED</span></td>
+    <td class="n">0.281</td><td class="n">0.124</td><td class="n">340 ms</td><td class="n">62.0%</td>
+    <td><b>+</b> Fastest; best-in-class on standard Nigerian English (0.168).
+        <b>−</b> Coverage collapses on tonal languages (Igbo 0.368); weakest African language breadth.</td>
+  </tr>
+  <tr>
+    <td><b>Google Gemini</b><br><span class="tag tag-p">PUBLISHED</span>
+        <span class="sub" style="font-size:6.6pt">(figures at left)</span></td>
+    <td class="n">0.295</td><td class="n">0.131</td><td class="n">510 ms</td><td class="n">84.0%</td>
+    <td><b>+</b> Only model here that does language ID + transcription + dialogue in one call; measured
+        medical-term retention perfect (0 drug-name errors, §5a). <b>−</b> Sensitive to tonal orthography;
+        free-tier rate limits throttle batch evaluation. <i>This is the model SabiLine runs in production;
+        it is also the only row with independently measured results — see §4a.</i></td>
+  </tr>
+  <tr>
+    <td><b>Whisper Large-v3</b><br><span class="tag tag-p">PUBLISHED</span></td>
+    <td class="n">0.389</td><td class="n">0.182</td><td class="n">720 ms</td><td class="n">54.5%</td>
+    <td><b>+</b> Open weights; self-hostable at zero marginal cost.
+        <b>−</b> Worst on every African language (Igbo 0.510); hallucination spikes at code-switch junctures; slowest.</td>
+  </tr>
+</table>
+
+<p class="sub"><b>Headline:</b> the ranking is driven almost entirely by <i>African-language</i> performance, not
+overall capability. Azure and Whisper are competitive-to-excellent on Nigerian English (0.168 / 0.224) yet fall to
+0.368 and 0.510 on Igbo — a 2.2× and 2.3× degradation. Sahara's advantage is not that it is a better ASR system in
+general, but that its training distribution includes the speech our users actually produce.</p>
+
+<h2>2. Data used</h2>
+
+<div class="grid2">
+  <div>
+    <h3>Live evaluation corpus <span class="tag tag-m">MEASURED</span></h3>
+    <p class="kv">
+      <b>Source:</b> 12 de-identified clinical instances authored to mirror the AfriHealth MultiBench
+      structure and clinical domains (<code>src/services/benchmark/sampleDataset.ts</code>).<br>
+      <b>Languages (6):</b> Hausa, Yoruba, Igbo, Nigerian English, West-African French, + 4 code-switched
+      instances (EN↔HA, EN↔YO, EN↔IG, FR↔EN).<br>
+      <b>Volume:</b> 111.5 s of audio across 12 instances (8.4–10.4 s each); mean 9.3 s.<br>
+      <b>Domains:</b> maternal health, malaria/fever triage, cardiology, pharmacy adherence, vaccination.<br>
+      <b>Privacy:</b> zero PII; de-identified speaker IDs (<code>SPK_NG_HA_101</code>); consent-verified and
+      PII-scrubbed flags carried per record.
+    </p>
+  </div>
+  <div>
+    <h3>Reference corpus <span class="tag tag-p">PUBLISHED</span></h3>
+    <p class="kv">
+      <b>Source:</b> Intron AfriHealth MultiBench (supplied competition reference dataset).<br>
+      <b>Volume:</b> 5,200 instances / ~20 hours / 600 speakers / 19 languages.<br>
+      <b>Breakdown:</b> 3,200 transcription · 1,600 translation · 398 spoken-QA recordings.<br>
+      <b>Primary African languages:</b> Hausa, Igbo, Yoruba, Nigerian English, Swahili, Twi, Zulu.<br>
+      <b>De-identification:</b> PII scrubbing with double-pass clinician + human annotator verification.<br>
+      <b>Ethics:</b> IRB/consented protocol for research use of de-identified healthcare audio.
+    </p>
+  </div>
+</div>
+
+<h3>Preprocessing &amp; audio protocol</h3>
+<p>Reference audio is <b>synthesized once per instance</b> from the de-identified reference transcript and the
+<b>identical waveform is served to every model</b> under comparison, so no model gets a cleaner signal than
+another. Text normalization before scoring: punctuation stripped, lower-cased, whitespace collapsed, and
+<b>diacritics deliberately preserved</b> (<code>stripDiacritics: false</code>) — stripping them would silently
+erase the tonal distinctions this benchmark exists to measure. The live intake path additionally applies gain
+normalization to quiet microphone input before transcription.</p>
+
+<div class="note">
+  <b>Methodological limitation, stated plainly.</b> A synthesized-audio protocol perfectly controls speaker,
+  channel and noise variation — every model is scored on exactly the same signal — but it does <i>not</i>
+  reproduce real clinic acoustics: background noise, disfluency, overlapping speech, or genuine speaker accent
+  variation. Absolute WER figures here should therefore be read as <b>a lower bound</b> on real-world error, and
+  the protocol's value is in <i>relative</i> model comparison, not in predicting field accuracy.
+</div>
+
+<div class="page-break"></div>
+
+<h2>3. Evaluation metrics &amp; why they are appropriate</h2>
+
+<table>
+  <tr><th style="width:15%">Metric</th><th style="width:31%">Definition</th><th>Why appropriate for this task</th></tr>
+  <tr>
+    <td><b>WER</b></td>
+    <td>Word-level Levenshtein edit distance ÷ reference word count.</td>
+    <td>Industry-standard, comparable to all published ASR literature. <b>But</b> it treats a clitic-merge
+        (<code>jinin ki</code>→<code>jininki</code>) as a full error, which systematically over-penalizes
+        agglutinative and tone-marked African orthographies. Reported, but never alone.</td>
+  </tr>
+  <tr>
+    <td><b>CER</b></td>
+    <td>Character-level edit distance ÷ reference character count.</td>
+    <td><b>The load-bearing metric for this benchmark.</b> Robust to tokenization and orthographic variance, so
+        it separates "spelled the tone mark differently" from "misheard the drug name" — a distinction WER
+        cannot make in Hausa, Yoruba or Igbo.</td>
+  </tr>
+  <tr>
+    <td><b>Accuracy</b></td>
+    <td>1 − WER, floored at 0.</td>
+    <td>Not a research metric; included because clinic administrators and procurement staff — the people who
+        decide whether to deploy this — read "78% accurate" and not "0.222 WER".</td>
+  </tr>
+  <tr>
+    <td><b>BLEU / chrF</b></td>
+    <td>n-gram / character-n-gram overlap against reference translation.</td>
+    <td>Downstream translation quality. chrF is weighted more heavily than BLEU here because it is markedly
+        more reliable for morphologically rich languages where valid translations differ in surface word form.</td>
+  </tr>
+  <tr>
+    <td><b>AfriCOMET</b></td>
+    <td>Learned neural translation metric tuned on African languages.</td>
+    <td>Correlates with human judgement where BLEU does not, precisely for the low-resource languages in scope.</td>
+  </tr>
+  <tr>
+    <td><b>Clinical error<br>weighting</b></td>
+    <td>Counts of medical-term errors, named-entity errors, and code-switch boundary errors.</td>
+    <td><b>The metric that actually matters for patient safety.</b> A 20% WER spread across function words is an
+        annoyance; a 20% WER concentrated in drug names, dosages or allergies is a clinical incident. These are
+        counted separately so the two can never be confused.</td>
+  </tr>
+</table>
+
+<h2>4. Quantitative results</h2>
+
+<h3>4a. Word / Character Error Rate per language</h3>
+<table>
+  <tr>
+    <th style="width:22%">Model</th>
+    <th class="n">Hausa</th><th class="n">Igbo</th><th class="n">Yoruba</th>
+    <th class="n">Nig. English</th><th class="n">Afr. French</th><th class="n">Macro CER</th>
+  </tr>
+  <tr class="best">
+    <td>Intron Sahara <span class="tag tag-p">PUB</span></td>
+    <td class="n"><b>0.218</b></td><td class="n"><b>0.252</b></td><td class="n"><b>0.231</b></td>
+    <td class="n">0.185</td><td class="n">0.260</td><td class="n"><b>0.107</b></td>
+  </tr>
+  <tr>
+    <td>Meta OmniLLM <span class="tag tag-p">PUB</span></td>
+    <td class="n">0.249</td><td class="n">0.284</td><td class="n">0.262</td>
+    <td class="n">0.198</td><td class="n">0.272</td><td class="n">0.119</td>
+  </tr>
+  <tr>
+    <td>Azure Cognitive <span class="tag tag-p">PUB</span></td>
+    <td class="n">0.334</td><td class="n">0.368</td><td class="n">0.312</td>
+    <td class="n"><b>0.168</b></td><td class="n"><b>0.245</b></td><td class="n">0.124</td>
+  </tr>
+  <tr>
+    <td>Google Gemini <span class="tag tag-p">PUB</span></td>
+    <td class="n">0.289</td><td class="n">0.315</td><td class="n">0.298</td>
+    <td class="n">0.174</td><td class="n">0.252</td><td class="n">0.131</td>
+  </tr>
+  <tr>
+    <td>Whisper Large-v3 <span class="tag tag-p">PUB</span></td>
+    <td class="n">0.442</td><td class="n">0.510</td><td class="n">0.428</td>
+    <td class="n">0.224</td><td class="n">0.298</td><td class="n">0.182</td>
+  </tr>
+  <tr style="border-top:1.6px solid #0f5132">
+    <td><b>Gemini 3.8 Flash</b> <span class="tag tag-m">MEASURED</span><br>
+        <span class="sub" style="font-size:6.9pt">SabiLine harness, live API, n=1 instance</span></td>
+    <td class="n"><b>WER 0.222</b><br><span class="sub">CER <b>0.025</b></span></td>
+    <td class="n" colspan="4" style="text-align:center;color:#78848d">
+      not measured — free-tier rate limit (≈1 instance/min, 20 req/day)<br>
+      each instance costs 2 API calls (synthesis + transcription)
+    </td>
+    <td class="n">—</td>
+  </tr>
+</table>
+
+<p class="sub"><b>Reading the measured row:</b> Gemini scored WER 0.222 but CER 0.025 on the same utterance — a
+<b>9× gap</b>. That gap is the single most important quantitative finding in this report, and §5 explains what
+produced it. Latency 2,677 ms end-to-end (includes cold start); 18 reference words, 81 reference characters;
+3 substitutions, 1 deletion, 0 insertions; <b>0 medical-term errors, 0 named-entity errors, 0 code-switch
+boundary errors.</b></p>
+
+<h3>4b. Downstream task — clinical translation quality <span class="tag tag-p">PUBLISHED</span></h3>
+<p class="sub" style="margin-bottom:1mm">This is the task the code-switched transcript feeds: a transcript is only
+useful here if it can be turned into instructions a patient can act on, in their own language.</p>
+<table>
+  <tr><th style="width:17%">Direction</th><th class="n" style="width:8%">BLEU</th><th class="n" style="width:8%">chrF</th>
+      <th class="n" style="width:10%">AfriCOMET</th><th>Clinical domain</th></tr>
+  <tr><td>English → Hausa</td><td class="n">0.284</td><td class="n">0.532</td><td class="n">0.684</td>
+      <td>Clinical triage &amp; patient instructions</td></tr>
+  <tr><td>English → Yoruba</td><td class="n">0.261</td><td class="n">0.518</td><td class="n">0.662</td>
+      <td>Antenatal &amp; community health education</td></tr>
+  <tr><td>English → Igbo</td><td class="n">0.253</td><td class="n">0.498</td><td class="n">0.648</td>
+      <td>Chronic disease &amp; hypertension guidance</td></tr>
+  <tr class="best"><td>English → French</td><td class="n">0.385</td><td class="n">0.642</td><td class="n">0.792</td>
+      <td>Public health announcements</td></tr>
+</table>
+<p class="sub">The ~13-point BLEU and ~14-point AfriCOMET gap between French and the three Nigerian languages is
+the resource gap made numeric: the same pipeline, same domain, same clinical register, ~50% better output for the
+language with orders of magnitude more training data. Igbo is consistently last across all three metrics.</p>
+
+<div class="page-break"></div>
+
+<h2>5. Qualitative findings</h2>
+
+<h3>5a. The measured case, in full <span class="tag tag-m">MEASURED</span></h3>
+<div class="xscript">
+  <span class="lbl">REFERENCE (ha) — AHMB-HA-001, antenatal iron/folate counselling</span><br>
+  Kina <span class="hl">bukatar</span> shan maganin iron da folic acid a kowace rana don <span class="hl">karfafa</span>
+  <span class="hl">jinin ki</span> da lafiyar jaririn.<br><br>
+  <span class="lbl">GEMINI HYPOTHESIS — WER 0.222 / CER 0.025</span><br>
+  kina <span class="hl">buƙatar</span> shan maganin iron da folic acid a kowace rana don <span class="hl">ƙarfafa</span>
+  <span class="hl">jininki</span> da lafiyar jaririn
+</div>
+
+<p>Every single counted error is orthographic, not acoustic:</p>
+<ul>
+  <li><b>ƙ vs k (2 errors).</b> The model wrote the hooked consonant <code>ƙ</code> in <i>buƙatar</i> and
+      <i>ƙarfafa</i>. This is <b>correct standard Hausa orthography</b> — the reference used the ASCII-fallback
+      <code>k</code>. The model was penalized for being <i>more</i> orthographically correct than its ground truth.</li>
+  <li><b>Clitic merge (1 substitution + 1 deletion).</b> <i>jinin ki</i> ("your blood") written as the equally
+      valid bound form <i>jininki</i>. Two word-level errors for a whitespace decision that changes nothing a
+      patient or clinician would hear or understand.</li>
+  <li><b>Clinical payload: perfect.</b> <i>iron</i>, <i>folic acid</i>, <i>kowace rana</i> (daily frequency) — the
+      drug names, the dosage schedule, the entire actionable content — transcribed without error.</li>
+</ul>
+<p><b>Implication for deployment:</b> had we ranked models on WER alone, we would have recorded a 22% error rate
+on an utterance that is clinically flawless. Any procurement decision or model-selection process for African-language
+clinical ASR that reports WER without CER alongside it is measuring orthographic convention and calling it accuracy.</p>
+
+<h3>5b. Per-model, per-language characteristics <span class="tag tag-p">PUBLISHED</span></h3>
+<table>
+  <tr><th style="width:16%">Model</th><th style="width:28%">Strengths</th><th style="width:28%">Weaknesses</th><th>Language-specific notes</th></tr>
+  <tr>
+    <td><b>Intron Sahara</b></td>
+    <td>Most consistent across all five African languages; narrowest spread between best and worst language
+        (0.185→0.260, a 1.4× range).</td>
+    <td>Not independently verifiable here; closed API; single-vendor dependency.</td>
+    <td><b>HA</b> best-in-class 0.218. <b>IG</b> 0.252 — the only model to hold Igbo under 0.26.
+        <b>YO</b> 0.231. Tonal resilience is the differentiator.</td>
+  </tr>
+  <tr>
+    <td><b>Meta OmniLLM</b></td>
+    <td>Solid second across the board; strong on accented multilingual speech.</td>
+    <td>Code-switch boundary latency; no language leads outright.</td>
+    <td><b>IG</b> 0.284 is its weakest. Consistent but never first.</td>
+  </tr>
+  <tr>
+    <td><b>Azure Cognitive</b></td>
+    <td>Fastest (340 ms); <b>best Nigerian English of any model</b> (0.168); best African French (0.245).</td>
+    <td>Coverage 62% — the narrowest. Degrades hardest on tonal languages.</td>
+    <td><b>EN</b> excellent. <b>IG</b> 0.368 and <b>HA</b> 0.334 — a 2.2× penalty vs its own English. Viable
+        only for English-dominant deployments.</td>
+  </tr>
+  <tr>
+    <td><b>Google Gemini</b></td>
+    <td>Only model providing language-ID + transcription + conversational reply in one pipeline — which is what
+        removes the language picker from SabiLine entirely. Medical terminology retention measured perfect.</td>
+    <td>Tonal/diacritic orthographic sensitivity; free-tier rate limits make batch evaluation impractical;
+        single point of failure (its TTS also synthesizes the benchmark audio).</td>
+    <td><b>HA</b> measured CER 0.025 — near-perfect at character level. <b>IG/YO</b> published 0.315/0.298:
+        tonal orthography remains its weak axis.</td>
+  </tr>
+  <tr>
+    <td><b>Whisper Large-v3</b></td>
+    <td>Open weights; self-hostable; no per-call cost; full data control for privacy-sensitive deployments.</td>
+    <td>Worst on every African language; hallucinates at code-switch junctures — the most dangerous failure mode
+        here, since it produces fluent, confident, wrong text rather than an obvious error.</td>
+    <td><b>IG</b> 0.510 — one word in two. <b>HA</b> 0.442, <b>YO</b> 0.428. Not deployable for Nigerian-language
+        clinical intake without fine-tuning.</td>
+  </tr>
+</table>
+
+<h2>6. Limitations &amp; reproduction</h2>
+<div class="grid2">
+  <div>
+    <h3>Known limitations</h3>
+    <ul>
+      <li><b>n=1 measured instance.</b> Free-tier quota (≈1 instance/min, 20 requests/day; 2 calls per instance)
+          capped live evaluation. The measured figure is a verified single observation, not a distribution —
+          no variance or confidence interval is claimed.</li>
+      <li><b>Sahara unverified locally</b> — egress-blocked (HTTP 403), not a code defect; the integration is
+          implemented and configured.</li>
+      <li><b>Synthesized, not recorded, audio</b> — see §2. Absolute figures are a lower bound on field error.</li>
+      <li><b>Model B / Model C</b> ship as an honest bring-your-own-endpoint extension point and report
+          "not configured" rather than emitting placeholder numbers.</li>
+    </ul>
+  </div>
+  <div>
+    <h3>Reproducing this run</h3>
+    <p class="kv">Set <code>GEMINI_API_KEY</code> and <code>SAHARA_API_KEY</code>, then from an unrestricted
+    network:</p>
+    <div class="xscript" style="font-family:SFMono-Regular,Consolas,monospace; font-size:6.9pt">
+curl -X POST $HOST/api/benchmark/run \<br>
+&nbsp;&nbsp;-H "Content-Type: application/json" \<br>
+&nbsp;&nbsp;-d '{"sampleIds":["AHMB-HA-001", ...],<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"selectedModels":["gemini","sahara"]}'
+    </div>
+    <p class="kv">Or use the in-app <b>Benchmark</b> tab (<code>?studio=1</code>), which exposes per-instance
+    selection, model selection, and the normalization switches. Every metric in §4a is computed by
+    <code>src/services/benchmark/{wer,cer,accuracy}.ts</code> using standard Levenshtein edit distance with no
+    weighting or score adjustment; the code is open in the repository.</p>
+  </div>
+</div>
+
+<div class="foot">
+  <b>SabiLine</b> · Intron Voice AI Challenge (Health) · Benchmark harness: <code>/api/benchmark/run</code> ·
+  Metrics: unweighted Levenshtein (WER/CER), 1−WER (Accuracy) · Published comparison figures: Intron AfriHealth
+  MultiBench reference documentation, cited not re-derived · Measured figures: run <code>RUN-MU39WOO6</code>,
+  2026-09-15T22:58:40Z, Gemini 3.8 Flash via live API · No patient data was used in any figure in this report.
+</div>
+
+</body>
+</html>
