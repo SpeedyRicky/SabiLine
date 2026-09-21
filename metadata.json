@@ -1,0 +1,7 @@
+{
+  "name": "AfriVoice Studio",
+  "description": "Multilingual AI Voice and Speech Intelligence Platform for African Healthcare & Code-Switching Communication",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
