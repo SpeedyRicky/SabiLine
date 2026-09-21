@@ -7,6 +7,25 @@ inspired by the **Intron AfriHealth MultiBench** project; that broader studio (V
 Code-Switching Explorer, Methodology/Ethics/Impact) still lives in the app and stays reachable by appending
 `?studio=1` to the URL.
 
+## Submission links
+
+Each of these is meant to open for anyone with the link — no sign-in and no
+access request. If one of them ever asks you to sign in, that is a sharing
+setting that needs fixing, not an intended restriction.
+
+| What | Link |
+| --- | --- |
+| Live app — SabiLine patient voice intake | https://sabiline-six.vercel.app/ |
+| AfriVoice Studio (`?studio=1`) | https://sabiline-six.vercel.app/?studio=1 |
+| Benchmark report (renders in the browser) | https://sabiline-six.vercel.app/benchmark-report.html |
+| Benchmark report (PDF, in this repository) | [docs/SabiLine-Benchmark-Report.pdf](docs/SabiLine-Benchmark-Report.pdf) |
+| Source repository | https://github.com/SpeedyRicky/SabiLine |
+
+The benchmark report is served from the live site as well as committed here,
+so it stays readable even if the repository is set to private — `public/` is
+copied verbatim into the build output by Vite, so
+`public/benchmark-report.html` is what answers at `/benchmark-report.html`.
+
 ## Problem
 
 Existing AI voice and speech benchmarks systematically underrepresent accented and multilingual speech

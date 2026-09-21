@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
 import { isOpenAIConfigured, openaiChatCompletion, openaiSynthesizeSpeech, isQuotaExceededError, checkOpenAIReachable } from './src/services/tts/openaiClient';
@@ -29,6 +29,28 @@ dotenv.config();
 
 const app = express();
 const PORT = 3000;
+
+// CORS for the API only. The web build is same-origin and needs none of this,
+// but a packaged Capacitor build is NOT: the WebView serves the bundle from
+// `capacitor://localhost` (iOS) / `http://localhost` (Android) while the API
+// lives on the deployment origin, so every /api call is cross-origin and the
+// browser blocks it before it is sent. Reflecting the request Origin is
+// deliberate and safe here — this API carries no cookies, no session and no
+// credentials of any kind, and every route is already reachable by anyone
+// anonymously, so there is no origin to protect against. `Vary: Origin` keeps
+// any intermediary from serving one origin's response to another.
+app.use('/api', (req: Request, res: Response, next) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin ?? '*');
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
 
 app.use(express.json({ limit: '50mb' }));
 
@@ -1026,6 +1048,47 @@ app.get('/api/samples', (req: Request, res: Response) => {
     success: true,
     samples: CLINICAL_AUDIO_SAMPLES,
   });
+});
+
+// Any unmatched /api/* path must answer in JSON. Without this, Express's own
+// default 404 renders an HTML page ("Cannot GET /api/..."), and because the
+// client calls `res.json()` on every response, a mistyped endpoint surfaces as
+// `Unexpected token '<'` — a parse error that hides the actual problem. The
+// message names the method and path, which is the whole fix when a client and
+// a server disagree about a route.
+app.use('/api', (req: Request, res: Response) => {
+  res.status(404).json({
+    success: false,
+    error: `No such API route: ${req.method} ${req.originalUrl}`,
+  });
+});
+
+// Last-resort error handler, JSON for the same reason. This is what catches
+// failures raised in MIDDLEWARE rather than inside a route — most commonly
+// express.json() rejecting a malformed body, which would otherwise be answered
+// by Express's built-in HTML error page and break the caller's JSON parsing.
+// `asyncHandler` above already covers throws inside the routes themselves.
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  const status = Number((err as { status?: number; statusCode?: number })?.status ??
+    (err as { statusCode?: number })?.statusCode) || 500;
+  const type = (err as { type?: string })?.type;
+
+  console.error(`[server] ${req.method} ${req.originalUrl} failed (${status}):`, err instanceof Error ? err.message : err);
+
+  // Headers already sent means a response is in flight and only the platform
+  // can finish it — anything we write now would be appended to a real body.
+  if (res.headersSent) return;
+
+  const message =
+    type === 'entity.parse.failed'
+      ? 'The request body was not valid JSON.'
+      : type === 'entity.too.large'
+        ? 'The request body was too large. Send a shorter audio clip.'
+        : status < 500
+          ? 'The request could not be understood.'
+          : 'Unexpected server error. Please try again.';
+
+  res.status(status).json({ success: false, error: message });
 });
 
 // Production & Development Vite Middleware Integration
